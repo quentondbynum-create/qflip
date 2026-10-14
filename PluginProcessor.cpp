@@ -3,7 +3,8 @@
 
 //==============================================================================
 QFlipProcessor::QFlipProcessor()
-    : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+    : AudioProcessor (BusesProperties().withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
+                                       .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
     formatManager.registerBasicFormats();
@@ -40,18 +41,23 @@ void QFlipProcessor::releaseResources() {}
 
 bool QFlipProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
-    // We generate audio; only the output bus matters.
-    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo()
-        || layouts.getMainOutputChannelSet() == juce::AudioChannelSet::mono();
+    const auto in  = layouts.getMainInputChannelSet();
+    const auto out = layouts.getMainOutputChannelSet();
+    // Stereo or mono in/out; in/out layouts must match.
+    return in == out
+        && (out == juce::AudioChannelSet::stereo()
+            || out == juce::AudioChannelSet::mono());
 }
 
 void QFlipProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
-    buffer.clear();
 
+    // No sample loaded: pass the input straight through.
     if (! hasSampleLoaded())
         return;
+
+    buffer.clear();
 
     const float  pitchSt  = apvts.getRawParameterValue (kParamPitch)->load();
     const bool   reversed = apvts.getRawParameterValue (kParamReverse)->load() > 0.5f;
