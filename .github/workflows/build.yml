@@ -36,15 +36,27 @@ jobs:
       - name: Build
         run: cmake --build build --config Release -j
 
-      - name: Create DMG (macOS)
+      - name: Create installer PKG and DMG (macOS)
         if: runner.os == 'macOS'
         run: |
           brew install create-dmg
-          STAGE="$RUNNER_TEMP/QFlip-dmg/QFlip"
-          mkdir -p "$STAGE"
-          find build/QFlip_artefacts -name "*.vst3" -exec cp -R {} "$STAGE/" \;
-          find build/QFlip_artefacts -name "*.component" -exec cp -R {} "$STAGE/" \;
-          create-dmg --volname "QFlip" "QFlip-v0.1.0-macOS.dmg" "$STAGE"
+          # Stage files mirroring the macOS filesystem layout
+          PKGROOT="$RUNNER_TEMP/pkgroot"
+          mkdir -p "$PKGROOT/Library/Audio/Plug-Ins/VST3"
+          mkdir -p "$PKGROOT/Library/Audio/Plug-Ins/Components"
+          find build/QFlip_artefacts -name "*.vst3" -exec cp -R {} "$PKGROOT/Library/Audio/Plug-Ins/VST3/" \;
+          find build/QFlip_artefacts -name "*.component" -exec cp -R {} "$PKGROOT/Library/Audio/Plug-Ins/Components/" \;
+          # Build the installer package (installs to / automatically)
+          pkgbuild --root "$PKGROOT" \
+            --identifier com.headroomaudio.qflip \
+            --version 0.1.0 \
+            --install-location / \
+            "$RUNNER_TEMP/QFlip-Installer.pkg"
+          # Wrap the installer in a DMG for distribution
+          DMGSTAGE="$RUNNER_TEMP/dmg-stage"
+          mkdir -p "$DMGSTAGE"
+          cp "$RUNNER_TEMP/QFlip-Installer.pkg" "$DMGSTAGE/"
+          create-dmg --volname "QFlip" "QFlip-v0.1.0-macOS.dmg" "$DMGSTAGE"
 
       - name: Upload artefacts
         uses: actions/upload-artifact@v4
