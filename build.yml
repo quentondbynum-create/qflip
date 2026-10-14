@@ -1,0 +1,36 @@
+name: Build QFlip
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            cmake_args: '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64'
+            artifact: QFlip-macOS
+          - os: windows-latest
+            cmake_args: ''
+            artifact: QFlip-Windows
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_args }}
+
+      - name: Build
+        run: cmake --build build --config Release -j
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: build/QFlip_artefacts/
