@@ -2,17 +2,24 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_formats/juce_audio_formats.h>
+#include <atomic>
+#include <cmath>
 
 //==============================================================================
 /*
-    QFlip — seamless reverse sampler.
+    QFlip v0.2 — real-time reverse/pitch FX.
 
-    MVP signal path:
-      1. User drops an audio file -> decoded into sampleBuffer.
-      2. processBlock streams the buffer, optionally reversed, at a pitch ratio.
-      3. Drag-out renders the processed buffer to a WAV for dropping into the DAW.
+    Signal path (per processBlock):
+      stereo input -> delay line -> pitch shifter -> reverse engine
+                     -> [+ looped sampler voice] -> gain -> stereo output
 
-    V2 roadmap: chop mode, tempo-synced gate, host beat-sync (RubberBand).
+    - Pitch shifter: dual-pointer crossfading delay (Eventide-style), +/-24 st.
+    - Reverse: pointers sweep backward through a 2 s window behind the input,
+      so you hear continuously updating reversed phrases, pitch-shifted.
+    - Bypass (pitch == 0, reverse off, no sample): input passes through,
+      latency reported as 0.
+    - Dragged-in sample loops continuously, pitched/reversed with the knobs,
+      mixed with the FX output.
 */
 class QFlipProcessor : public juce::AudioProcessor
 {
@@ -45,15 +52,18 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
-    // ---- QFlip sample engine ----
+    // ---- QFlip sample engine (drag-in looper) ----
     bool loadAudioFile (const juce::File& file);
     bool hasSampleLoaded() const;
     juce::AudioBuffer<float>& getSampleBuffer();
     juce::String getSampleFileName() const;
 
-    // Render the sample with current reverse/pitch settings into a fresh buffer
-    // (used by the drag-out export pad). Returned buffer is stereo @ 44.1k.
+    // Render the sample with current reverse/pitch settings (legacy helper).
     std::unique_ptr<juce::AudioBuffer<float>> renderProcessed();
+
+    // Copy the most recent input samples for the UI visualiser.
+    // Safe enough to call from the message thread (visuals only).
+    void copyRecentInput (float* dst, int numSamples) const;
 
     juce::AudioProcessorValueTreeState apvts;
 
@@ -64,13 +74,34 @@ public:
 private:
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
-    // Linear-interpolated read so pitched playback stays smooth.
+    // Linear-interpolated read from the loaded sample (for the looper voice).
     float readSampleLinear (int channel, double position) const;
+    // Linear-interpolated read from the delay line, at an offset (in samples)
+    // behind the current write position. Handles circular wrap.
+    float readDelayLinear (int channel, float offsetBehindWrite) const;
+    void resetFxPointers();
 
     juce::AudioFormatManager formatManager;
     juce::AudioBuffer<float> sampleBuffer;
     juce::String sampleFileName;
-    double playhead = 0.0; // fractional position in samples
+    double playhead = 0.0; // fractional position in the sample (looper voice)
+
+    // Real-time FX delay line: 2 channels x 4 seconds.
+    juce::AudioBuffer<float> delayBuffer;
+    int delayNumSamples = 0;
+    std::atomic<int> delayWritePos { 0 };
+    float baseDelaySamples = 0.0f; // 60 ms pitch-shifter base delay
+
+    // Pitch-shifter read pointers (offsets in samples behind writePos).
+    float psOffsetA = 0.0f, psOffsetB = 0.0f;
+
+    // Reverse-engine read pointers + window.
+    float revOffsetA = 0.0f, revOffsetB = 0.0f;
+    float revWindowSamples = 0.0f; // 2.0 s
+    float revStartSamples  = 0.0f; // 0.05 s
+    bool wasReversed = false;
+
+    int reportedLatency = -1;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (QFlipProcessor)
 };

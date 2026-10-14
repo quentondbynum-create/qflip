@@ -2,39 +2,80 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_utils/juce_audio_utils.h>
+#include <functional>
 #include "PluginProcessor.h"
 
 //==============================================================================
-// Waveform display. Doubles as the drop zone for audio files.
-class WaveformDisplay : public juce::Component,
-                       private juce::ChangeListener
+// Bold, colorful look for QFlip v0.2 — neon on vibrant gradient.
+class QFlipLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
-    explicit WaveformDisplay (QFlipProcessor& p);
-    void paint (juce::Graphics& g) override;
-    void setFile (const juce::File& file);
+    void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h,
+                           float sliderPos, float rotaryStartAngle, float rotaryEndAngle,
+                           juce::Slider&) override;
 
-private:
-    void changeListenerCallback (juce::ChangeBroadcaster* source) override;
+    void drawComboBox (juce::Graphics&, int width, int height, bool isButtonDown,
+                       int buttonX, int buttonY, int buttonW, int buttonH,
+                       juce::ComboBox&) override;
+    juce::Font getComboBoxFont (juce::ComboBox&) override;
 
-    QFlipProcessor& processor;
-    juce::AudioFormatManager formatManager;
-    juce::AudioThumbnailCache thumbnailCache { 5 };
-    juce::AudioThumbnail thumbnail { 512, formatManager, thumbnailCache };
+    void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour& backgroundColour,
+                               bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
+    void drawButtonText (juce::Graphics&, juce::TextButton&, bool, bool) override;
+    juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
+
+    void drawLabel (juce::Graphics&, juce::Label&) override;
+    juce::Font getLabelFont (juce::Label&) override;
+
+    void drawPopupMenuBackground (juce::Graphics&, int width, int height) override;
+    void drawPopupMenuItem (juce::Graphics&, const juce::Rectangle<int>& area,
+                            bool isSeparator, bool isActive, bool isHighlighted, bool isTicked,
+                            bool hasSubMenu, const juce::String& text, const juce::String& shortcut,
+                            const juce::Drawable* icon, const juce::Colour* textColour) override;
 };
 
 //==============================================================================
-// The magic pad: press-and-hold to drag the processed audio out to the DAW.
-class DragOutPad : public juce::Component
+// Live input visualiser + sample drop zone.
+// Implements FileDragAndDropTarget itself so drops land even though this
+// component covers the editor background (the v0.1 drop bug).
+class WaveformDisplay : public juce::Component,
+                        public juce::FileDragAndDropTarget,
+                        private juce::Timer
 {
 public:
-    explicit DragOutPad (QFlipProcessor& p);
+    WaveformDisplay (QFlipProcessor& p, std::function<void (const juce::File&)> onDrop);
+    ~WaveformDisplay() override;
+
     void paint (juce::Graphics& g) override;
-    void mouseDown (const juce::MouseEvent& e) override;
+    void paintOverChildren (juce::Graphics& g) override;
+    void resized() override;
+
+    bool isInterestedInFileDrag (const juce::StringArray& files) override;
+    void filesDropped (const juce::StringArray& files, int x, int y) override;
+
+    void setHasSample (bool has);
 
 private:
-    bool exportToTempWav (juce::File& outFile);
+    void timerCallback() override;
+    static bool isAudioFile (const juce::File& f);
+
     QFlipProcessor& processor;
+    std::function<void (const juce::File&)> onFileDrop;
+    juce::AudioVisualiserComponent visualiser { 1 };
+    bool hasSample = false;
+    float scopeBuf[512];
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveformDisplay)
+};
+
+//==============================================================================
+struct QFlipPreset
+{
+    juce::String name;
+    float pitch = 0.0f;   // semitones
+    bool reverse = false;
+    float gain = 1.0f;
+    bool isFactory = true;
 };
 
 //==============================================================================
@@ -54,21 +95,39 @@ public:
 private:
     void loadFile (const juce::File& file);
     void openFileBrowser();
+    void updateSampleLabel();
+
+    void buildPresetList();
+    void refreshPresetCombo();
+    void applyPreset (const QFlipPreset& p);
+    void cyclePreset (int direction);
+    void promptSavePreset();
+    void saveUserPreset (const juce::String& name);
+    QFlipPreset presetFromFile (const juce::File& f);
+    static juce::File getPresetDir();
 
     QFlipProcessor& processor;
+    QFlipLookAndFeel lookAndFeel;
 
     WaveformDisplay waveform;
-    DragOutPad dragOutPad;
+
+    juce::ComboBox presetBox;
+    juce::TextButton prevPresetButton { "<" };
+    juce::TextButton nextPresetButton { ">" };
+    juce::TextButton savePresetButton { "SAVE" };
+    juce::TextButton browseButton { "LOAD SAMPLE" };
+
+    juce::Label sampleLabel;
 
     juce::Slider pitchSlider;
     juce::Slider gainSlider;
     juce::TextButton reverseButton { "REVERSE" };
-    juce::TextButton browseButton { "LOAD SAMPLE" };
-    juce::Label titleLabel;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> pitchAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> gainAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> reverseAttachment;
+
+    juce::Array<QFlipPreset> presets;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (QFlipEditor)
 };
