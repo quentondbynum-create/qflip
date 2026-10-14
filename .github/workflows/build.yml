@@ -36,8 +36,25 @@ jobs:
       - name: Build
         run: cmake --build build --config Release -j
 
+      - name: Create DMG (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install create-dmg
+          STAGE="$RUNNER_TEMP/QFlip-dmg/QFlip"
+          mkdir -p "$STAGE"
+          find build/QFlip_artefacts -name "*.vst3" -exec cp -R {} "$STAGE/" \;
+          find build/QFlip_artefacts -name "*.component" -exec cp -R {} "$STAGE/" \;
+          create-dmg --volname "QFlip" "QFlip-v0.1.0-macOS.dmg" "$STAGE"
+
       - name: Upload artefacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: build/QFlip_artefacts/
+
+      - name: Upload DMG (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: QFlip-macOS-DMG
+          path: QFlip-v0.1.0-macOS.dmg
