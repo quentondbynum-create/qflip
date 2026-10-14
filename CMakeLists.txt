@@ -19,6 +19,7 @@ juce_add_plugin(QFlip
     DESCRIPTION "Seamless reverse sampler: drag in, flip, pitch, chop, drag out"
     PLUGIN_MANUFACTURER_CODE Hdrm
     PLUGIN_CODE Qflp
+    BUNDLE_ID com.headroomaudio.qflip
     FORMATS AU VST3 Standalone
     PRODUCT_NAME "QFlip"
     NEEDS_MIDI_INPUT FALSE
@@ -27,8 +28,8 @@ juce_add_plugin(QFlip
 )
 
 target_sources(QFlip PRIVATE
-    Source/PluginProcessor.cpp
-    Source/PluginEditor.cpp
+    PluginProcessor.cpp
+    PluginEditor.cpp
 )
 
 target_compile_definitions(QFlip PRIVATE
