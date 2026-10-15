@@ -58,16 +58,31 @@ public:
     void setCurvePreset (int index); // redraw from processor preset
     std::function<void()> onCurveChanged;
 
+    // Warp zone painting (v0.4): paint FX spans onto the loop timeline
+    void setZonePaintMode (bool paintZones);
+    bool isZonePaintMode() const { return zonePaintMode; }
+    void setPaintZoneType (int t);
+    void clearZones();
+    void syncZonesFromProcessor();
+
 private:
     void timerCallback() override;
     juce::Point<float> pointToPixel (float x, float y) const;
     void pixelToPoint (juce::Point<float> px, float& x, float& y) const;
     int findNearestPoint (juce::Point<float> px, float maxDist) const;
+    float xToLoop (float px) const;
+    int findZoneAt (float loopX) const;
 
     QFlipProcessor& processor;
     std::vector<QFlipProcessor::CurvePoint> points;
     int dragIndex = -1;
     float pulsePhase = 0.0f; // for the glow pulse animation
+    // Zone painting state
+    bool zonePaintMode = false;
+    int paintZoneType = 0;
+    float paintStartX = 0.0f;
+    bool painting = false;
+    std::vector<QFlipProcessor::WarpZone> zones;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TimeCurveEditor)
 };
@@ -112,13 +127,12 @@ private:
 };
 
 //==============================================================================
-// WaveformDisplay — drop zone + capture waveform + drag-out source
+// WaveformDisplay — live scope + capture waveform + drag-out source (v0.4: no sample loading)
 class WaveformDisplay : public juce::Component,
-                        public juce::FileDragAndDropTarget,
                         private juce::Timer
 {
 public:
-    WaveformDisplay (QFlipProcessor& p, std::function<void (const juce::File&)> onDrop);
+    explicit WaveformDisplay (QFlipProcessor& p);
     ~WaveformDisplay() override;
 
     void paint (juce::Graphics& g) override;
@@ -126,21 +140,14 @@ public:
     void mouseDown (const juce::MouseEvent& e) override;
     void mouseDrag (const juce::MouseEvent& e) override;
 
-    bool isInterestedInFileDrag (const juce::StringArray& files) override;
-    void filesDropped (const juce::StringArray& files, int x, int y) override;
-
-    void setHasSample (bool has);
     void setCaptureMode (bool capturing, bool hasCapture);
 
 private:
     void timerCallback() override;
-    static bool isAudioFile (const juce::File& f);
 
     QFlipProcessor& processor;
-    std::function<void (const juce::File&)> onFileDrop;
     juce::AudioVisualiserComponent visualiser { 1 };
     juce::DragAndDropContainer* dragContainer = nullptr;
-    bool hasSample = false;
     bool captureMode = false;
     bool hasCapture = false;
     float scopeBuf[512];
@@ -172,11 +179,11 @@ struct QFlipPreset
     float xoverHigh = 4000.0f;
     int bandLow = 0, bandMid = 0, bandHigh = 0;
     bool isFactory = true;
+    std::vector<QFlipProcessor::WarpZone> zones; // v0.4 warp zones
 };
 
 //==============================================================================
 class QFlipEditor : public juce::AudioProcessorEditor,
-                    public juce::FileDragAndDropTarget,
                     public juce::DragAndDropContainer
 {
 public:
@@ -186,16 +193,9 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    bool isInterestedInFileDrag (const juce::StringArray& files) override;
-    void filesDropped (const juce::StringArray& files, int x, int y) override;
-
     static std::vector<QFlipPreset> buildFactoryPresets();
 
 private:
-    void loadFile (const juce::File& file);
-    void openFileBrowser();
-    void updateSampleLabel();
-
     void buildPresetList();
     void refreshPresetCombo();
     void applyPreset (const QFlipPreset& p);
@@ -234,6 +234,15 @@ private:
     juce::Slider pitchSlider;
     juce::Slider gainSlider;
     juce::Slider mixSlider;
+    juce::Label pitchLabel { {}, "PITCH" };
+    juce::Label gainLabel { {}, "GAIN" };
+    juce::Label mixLabel { {}, "MIX" };
+
+    // Warp zone strip (v0.4)
+    juce::TextButton zonePaintButton { "PAINT ZONES" };
+    juce::TextButton zoneSwatches[5];
+    juce::TextButton zoneClearButton { "CLEAR" };
+    juce::Label zoneHintLabel;
 
     // EDIT view
     juce::ComboBox loopBarsBox;
@@ -245,13 +254,16 @@ private:
     juce::Slider revDlyMixSlider;
     juce::Slider xoverLowSlider;
     juce::Slider xoverHighSlider;
+    juce::Label revVerbMixLabel { {}, "REV VERB MIX" };
+    juce::Label revDlyFbLabel { {}, "DELAY FEEDBACK" };
+    juce::Label revDlyMixLabel { {}, "DELAY MIX" };
+    juce::Label xoverLowLabel { {}, "XOVER LOW" };
+    juce::Label xoverHighLabel { {}, "XOVER HIGH" };
     juce::ComboBox bandLowBox, bandMidBox, bandHighBox;
     juce::TextButton captureButton { "CAPTURE" };
     juce::TextButton tapeStartButton { "TAPE START" };
 
     WaveformDisplay waveform;
-    juce::Label sampleLabel;
-    juce::TextButton browseButton { "LOAD SAMPLE" };
 
     // Attachments
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> pitchAttachment;
