@@ -3,96 +3,144 @@
 #include <BinaryData.h>
 
 //==============================================================================
-// ChronoLookAndFeel — deep near-black, electric cyan, clean modern
+// HardwareLookAndFeel — brushed metal, chrome knobs, LED buttons, LCD display
 //==============================================================================
-void ChronoLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
+void HardwareLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
                                            float sliderPos, float rotaryStartAngle,
                                            float rotaryEndAngle, juce::Slider& slider)
 {
-    const float radius = juce::jmin ((float) w, (float) h) * 0.5f - 8.0f;
+    const float radius = juce::jmin ((float) w, (float) h) * 0.5f - 10.0f;
     const auto centre = juce::Point<float> ((float) x + (float) w * 0.5f,
-                                            (float) y + (float) h * 0.5f - 4.0f);
+                                            (float) y + (float) h * 0.5f - 6.0f);
     const auto accent = slider.findColour (juce::Slider::rotarySliderFillColourId);
+    const float angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
 
-    // subtle glow
-    juce::ColourGradient glow (accent.withAlpha (0.35f), centre,
-                               accent.withAlpha (0.0f),
-                               centre + juce::Point<float> (radius * 1.5f, 0.0f), true);
-    g.setGradientFill (glow);
-    g.fillEllipse (centre.x - radius * 1.5f, centre.y - radius * 1.5f,
-                   radius * 3.0f, radius * 3.0f);
+    // Tick marks (like TONEFLX hardware)
+    g.setColour (Hardware::textDim.withAlpha (0.7f));
+    const int numTicks = 11;
+    for (int i = 0; i < numTicks; ++i)
+    {
+        const float ta = rotaryStartAngle + (float) i / (float) (numTicks - 1)
+                         * (rotaryEndAngle - rotaryStartAngle);
+        const float r1 = radius + 4.0f, r2 = radius + 9.0f;
+        g.drawLine (centre.x + std::cos (ta - juce::MathConstants<float>::halfPi) * r1,
+                    centre.y + std::sin (ta - juce::MathConstants<float>::halfPi) * r1,
+                    centre.x + std::cos (ta - juce::MathConstants<float>::halfPi) * r2,
+                    centre.y + std::sin (ta - juce::MathConstants<float>::halfPi) * r2, 1.5f);
+    }
 
-    // body
-    g.setColour (Chrono::bgPanel.brighter (0.08f));
+    // Knob shadow
+    g.setColour (juce::Colours::black.withAlpha (0.55f));
+    g.fillEllipse (centre.x - radius + 2.0f, centre.y - radius + 4.0f,
+                   radius * 2.0f, radius * 2.0f);
+
+    // Chrome body: radial brushed metal
+    juce::ColourGradient chrome (Hardware::metalHi, centre.x - radius * 0.4f, centre.y - radius * 0.4f,
+                                 Hardware::metalLo, centre.x + radius * 0.5f, centre.y + radius * 0.5f, false);
+    // band the gradient for a brushed look
+    g.setGradientFill (chrome);
     g.fillEllipse (centre.x - radius, centre.y - radius, radius * 2.0f, radius * 2.0f);
-    g.setColour (accent.withAlpha (0.6f));
+
+    // Knurled edge ring
+    g.setColour (Hardware::metalLo.withAlpha (0.9f));
+    for (int i = 0; i < 28; ++i)
+    {
+        const float ta = (float) i / 28.0f * juce::MathConstants<float>::twoPi;
+        g.drawLine (centre.x + std::cos (ta) * (radius - 2.0f),
+                    centre.y + std::sin (ta) * (radius - 2.0f),
+                    centre.x + std::cos (ta) * (radius - 5.0f),
+                    centre.y + std::sin (ta) * (radius - 5.0f), 1.0f);
+    }
+    g.setColour (Hardware::metalHi.withAlpha (0.5f));
     g.drawEllipse (centre.x - radius, centre.y - radius, radius * 2.0f, radius * 2.0f, 1.5f);
 
-    // track
-    juce::Path track;
-    track.addCentredArc (centre.x, centre.y, radius * 0.72f, radius * 0.72f, 0.0f,
-                         rotaryStartAngle, rotaryEndAngle, true);
-    g.setColour (Chrono::gridLine);
-    g.strokePath (track, juce::PathStrokeType (7.0f, juce::PathStrokeType::curved,
-                                               juce::PathStrokeType::rounded));
-    // value
-    const float angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
+    // Accent arc showing value
     juce::Path value;
-    value.addCentredArc (centre.x, centre.y, radius * 0.72f, radius * 0.72f, 0.0f,
+    value.addCentredArc (centre.x, centre.y, radius * 0.62f, radius * 0.62f, 0.0f,
                          rotaryStartAngle, angle, true);
     g.setColour (accent);
-    g.strokePath (value, juce::PathStrokeType (7.0f, juce::PathStrokeType::curved,
+    g.strokePath (value, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved,
                                                juce::PathStrokeType::rounded));
+    // LED glow at the pointer tip when value is high
+    {
+        const float tipR = radius * 0.62f;
+        const juce::Point<float> tip (centre.x + std::sin (angle) * tipR,
+                                      centre.y - std::cos (angle) * tipR);
+        juce::ColourGradient ledGlow (accent.withAlpha (0.5f), tip,
+                                      accent.withAlpha (0.0f), tip + juce::Point<float> (14.0f, 0), true);
+        g.setGradientFill (ledGlow);
+        g.fillEllipse (tip.x - 14.0f, tip.y - 14.0f, 28.0f, 28.0f);
+    }
 
-    // pointer
+    // Pointer line
     juce::Path ptr;
-    ptr.addRoundedRectangle (-2.5f, -radius * 0.85f, 5.0f, radius * 0.5f, 2.5f);
+    ptr.addRoundedRectangle (-2.0f, -radius * 0.78f, 4.0f, radius * 0.42f, 2.0f);
     ptr.applyTransform (juce::AffineTransform::rotation (angle).translated (centre.x, centre.y));
-    g.setColour (Chrono::textBright);
+    g.setColour (juce::Colours::black.withAlpha (0.85f));
     g.fillPath (ptr);
 }
 
-void ChronoLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, bool,
+void HardwareLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, bool,
                                        int, int, int, int, juce::ComboBox& box)
 {
     auto bounds = juce::Rectangle<float> (0.0f, 0.0f, (float) width, (float) height);
-    g.setColour (Chrono::bgPanel);
-    g.fillRoundedRectangle (bounds, 8.0f);
-    g.setColour (Chrono::cyan.withAlpha (0.4f));
-    g.drawRoundedRectangle (bounds.reduced (0.5f), 8.0f, 1.0f);
+    // dark inset well
+    g.setColour (juce::Colours::black.withAlpha (0.6f));
+    g.fillRoundedRectangle (bounds, 6.0f);
+    g.setColour (Hardware::metalMid.withAlpha (0.35f));
+    g.drawRoundedRectangle (bounds.reduced (0.5f), 6.0f, 1.0f);
     const float cx = (float) width - 18.0f, cy = (float) height * 0.5f;
     juce::Path arrow;
     arrow.addTriangle (cx - 5, cy - 3, cx + 5, cy - 3, cx, cy + 4);
-    g.setColour (box.isEnabled() ? Chrono::cyan : Chrono::textDim);
+    g.setColour (box.isEnabled() ? Hardware::cyan : Hardware::textDim);
     g.fillPath (arrow);
 }
 
-juce::Font ChronoLookAndFeel::getComboBoxFont (juce::ComboBox&)
+juce::Font HardwareLookAndFeel::getComboBoxFont (juce::ComboBox&)
 {
     return juce::Font (14.0f, juce::Font::bold);
 }
 
-void ChronoLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& button,
+void HardwareLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& button,
                                                const juce::Colour& backgroundColour,
                                                bool highlighted, bool down)
 {
     auto bounds = button.getLocalBounds().toFloat().reduced (1.0f);
     const bool isOn = button.getToggleState();
-    juce::Colour base = backgroundColour;
-    if (down) base = base.darker (0.2f);
-    else if (highlighted) base = base.brighter (0.12f);
+    const auto accent = button.findColour (juce::TextButton::textColourOnId);
+
+    // Button shadow
+    g.setColour (juce::Colours::black.withAlpha (0.5f));
+    g.fillRoundedRectangle (bounds.translated (0.0f, 2.0f), 8.0f);
+
+    // Metal cap
+    const auto capTop = down ? Hardware::metalLo : Hardware::metalMid;
+    juce::ColourGradient cap (capTop,
+                              0.0f, bounds.getY(), capTop.darker (0.35f), 0.0f, bounds.getBottom(), false);
+    if (highlighted && ! down)
+        cap = juce::ColourGradient (Hardware::metalHi, 0.0f, bounds.getY(),
+                                    Hardware::metalMid, 0.0f, bounds.getBottom(), false);
+    g.setGradientFill (cap);
+    g.fillRoundedRectangle (bounds, 8.0f);
+    g.setColour (juce::Colours::black.withAlpha (0.6f));
+    g.drawRoundedRectangle (bounds.reduced (0.5f), 8.0f, 1.0f);
+
     if (isOn)
     {
-        g.setColour (Chrono::cyan.withAlpha (0.25f));
-        g.fillRoundedRectangle (bounds.expanded (4.0f), 12.0f);
+        // Engaged: accent under-glow + lit rim
+        juce::ColourGradient glow (accent.withAlpha (0.45f), bounds.getCentre(),
+                                   accent.withAlpha (0.0f),
+                                   bounds.getCentre() + juce::Point<float> (bounds.getWidth() * 0.7f, 0),
+                                   true);
+        g.setGradientFill (glow);
+        g.fillRoundedRectangle (bounds.expanded (6.0f), 12.0f);
+        g.setColour (accent);
+        g.drawRoundedRectangle (bounds.reduced (1.5f), 7.0f, 2.0f);
     }
-    g.setColour (base);
-    g.fillRoundedRectangle (bounds, 10.0f);
-    g.setColour (isOn ? Chrono::cyan : Chrono::textDim.withAlpha (0.5f));
-    g.drawRoundedRectangle (bounds, 10.0f, isOn ? 2.0f : 1.0f);
+    juce::ignoreUnused (backgroundColour);
 }
 
-void ChronoLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& button, bool, bool)
+void HardwareLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& button, bool, bool)
 {
     g.setFont (getTextButtonFont (button, button.getHeight()));
     g.setColour (button.findColour (button.getToggleState() ? juce::TextButton::textColourOnId
@@ -101,19 +149,19 @@ void ChronoLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& but
                 juce::Justification::centred, false);
 }
 
-juce::Font ChronoLookAndFeel::getTextButtonFont (juce::TextButton&, int buttonHeight)
+juce::Font HardwareLookAndFeel::getTextButtonFont (juce::TextButton&, int buttonHeight)
 {
     return juce::Font (juce::jmin (16.0f, (float) buttonHeight * 0.38f), juce::Font::bold);
 }
 
-void ChronoLookAndFeel::drawLabel (juce::Graphics& g, juce::Label& label)
+void HardwareLookAndFeel::drawLabel (juce::Graphics& g, juce::Label& label)
 {
     g.setColour (label.findColour (juce::Label::textColourId));
     g.setFont (getLabelFont (label));
     g.drawText (label.getText(), label.getLocalBounds(), label.getJustificationType(), true);
 }
 
-juce::Font ChronoLookAndFeel::getLabelFont (juce::Label&)
+juce::Font HardwareLookAndFeel::getLabelFont (juce::Label&)
 {
     return juce::Font (13.0f, juce::Font::bold);
 }
@@ -163,6 +211,29 @@ int TimeCurveEditor::findNearestPoint (juce::Point<float> px, float maxDist) con
 
 void TimeCurveEditor::mouseDown (const juce::MouseEvent& e)
 {
+    // Paint toolbar hits (top-right of the LCD)
+    if (paintTabRect.contains (e.position))
+    {
+        setZonePaintMode (! zonePaintMode);
+        return;
+    }
+    if (zonePaintMode)
+    {
+        for (int i = 0; i < 5; ++i)
+        {
+            if (paintDotRects[i].contains (e.position))
+            {
+                setPaintZoneType (i);
+                return;
+            }
+        }
+        if (paintClearRect.contains (e.position))
+        {
+            clearZones();
+            return;
+        }
+    }
+
     if (zonePaintMode)
     {
         if (e.mods.isRightButtonDown() || e.mods.isAltDown())
@@ -321,12 +392,27 @@ void TimeCurveEditor::paint (juce::Graphics& g)
     auto bounds = getLocalBounds().toFloat();
     auto r = bounds.reduced (24.0f, 18.0f);
 
-    // Background panel
-    g.setColour (Chrono::bgPanel);
-    g.fillRoundedRectangle (bounds, 14.0f);
+    // Recessed LCD bezel
+    g.setColour (juce::Colours::black.withAlpha (0.65f));
+    g.fillRoundedRectangle (bounds, 10.0f);
+    juce::ColourGradient bezel (Hardware::metalMid, 0.0f, bounds.getY(),
+                                Hardware::metalLo, 0.0f, bounds.getBottom(), false);
+    g.setGradientFill (bezel);
+    g.drawRoundedRectangle (bounds.reduced (1.0f), 10.0f, 2.0f);
+
+    // LCD glass
+    juce::ColourGradient glass (Hardware::screen, 0.0f, bounds.getY(),
+                                Hardware::screenEdge, 0.0f, bounds.getBottom(), false);
+    g.setGradientFill (glass);
+    g.fillRoundedRectangle (bounds.reduced (3.0f), 8.0f);
+
+    // Scanlines (subtle CRT feel)
+    g.setColour (juce::Colours::black.withAlpha (0.16f));
+    for (float y = bounds.getY() + 4.0f; y < bounds.getBottom() - 4.0f; y += 3.0f)
+        g.drawHorizontalLine ((int) y, bounds.getX() + 4.0f, bounds.getRight() - 4.0f);
 
     // Grid
-    g.setColour (Chrono::gridLine);
+    g.setColour (Hardware::gridLine);
     for (int i = 1; i < 4; ++i)
     {
         const float gx = r.getX() + r.getWidth() * i / 4.0f;
@@ -342,7 +428,7 @@ void TimeCurveEditor::paint (juce::Graphics& g)
     g.drawHorizontalLine ((int) refY, r.getX(), r.getRight());
 
     // Labels
-    g.setColour (Chrono::textDim);
+    g.setColour (Hardware::textDim);
     g.setFont (juce::Font (10.0f, juce::Font::bold));
     g.drawText ("REVERSE", r.getX(), r.getY() - 2, 70, 14, juce::Justification::left);
     g.drawText ("NOW", r.getX(), r.getBottom() - 12, 70, 14, juce::Justification::left);
@@ -385,9 +471,58 @@ void TimeCurveEditor::paint (juce::Graphics& g)
         {
             g.setColour (QFlipProcessor::getZoneTypeColour (paintZoneType).withAlpha (0.9f));
             g.setFont (juce::Font (10.0f, juce::Font::bold));
-            g.drawText ("PAINTING " + juce::String (QFlipProcessor::getZoneTypeName (paintZoneType)).toUpperCase()
-                        + " — DRAG TO PAINT, RIGHT-CLICK ERASES",
+            g.drawText ("DRAG TO PAINT — RIGHT-CLICK ERASES",
                         r.getX(), r.getBottom() + 2, r.getWidth(), 14, juce::Justification::centredLeft);
+        }
+    }
+
+    // Paint toolbar (top-right of the LCD, drawn on the glass)
+    {
+        const float ty = bounds.getY() + 10.0f;
+        float tx = bounds.getRight() - 14.0f;
+        // PAINT tab
+        paintTabRect = juce::Rectangle<float> (tx - 64.0f, ty, 64.0f, 22.0f);
+        const bool tabOn = zonePaintMode;
+        g.setColour (tabOn ? Hardware::cyan.withAlpha (0.25f) : juce::Colours::black.withAlpha (0.5f));
+        g.fillRoundedRectangle (paintTabRect, 5.0f);
+        g.setColour (tabOn ? Hardware::cyan : Hardware::textDim);
+        g.drawRoundedRectangle (paintTabRect, 5.0f, 1.0f);
+        g.setFont (juce::Font (10.0f, juce::Font::bold));
+        g.drawText ("PAINT", paintTabRect, juce::Justification::centred, false);
+        tx -= 72.0f;
+        if (zonePaintMode)
+        {
+            // Clear button
+            paintClearRect = juce::Rectangle<float> (tx - 24.0f, ty, 24.0f, 22.0f);
+            g.setColour (juce::Colours::black.withAlpha (0.5f));
+            g.fillRoundedRectangle (paintClearRect, 5.0f);
+            g.setColour (Hardware::textDim);
+            g.drawRoundedRectangle (paintClearRect, 5.0f, 1.0f);
+            g.setFont (juce::Font (12.0f, juce::Font::bold));
+            g.drawText ("x", paintClearRect, juce::Justification::centred, false);
+            tx -= 30.0f;
+            // Color dots
+            for (int i = 4; i >= 0; --i)
+            {
+                paintDotRects[i] = juce::Rectangle<float> (tx - 22.0f, ty, 22.0f, 22.0f);
+                const auto zc = QFlipProcessor::getZoneTypeColour (i);
+                const auto dot = paintDotRects[i].reduced (4.0f);
+                if (i == paintZoneType)
+                {
+                    g.setColour (zc.withAlpha (0.35f));
+                    g.fillEllipse (dot.expanded (3.0f));
+                }
+                g.setColour (zc);
+                g.fillEllipse (dot);
+                g.setColour (juce::Colours::black.withAlpha (0.5f));
+                g.drawEllipse (dot, 1.0f);
+                tx -= 26.0f;
+            }
+        }
+        else
+        {
+            paintClearRect = {};
+            for (int i = 0; i < 5; ++i) paintDotRects[i] = {};
         }
     }
 
@@ -421,16 +556,16 @@ void TimeCurveEditor::paint (juce::Graphics& g)
 
     // Glow underlay (cyan -> violet gradient)
     {
-        juce::ColourGradient grad (Chrono::cyan.withAlpha (0.5f), r.getX(), r.getCentreY(),
-                                   Chrono::violet.withAlpha (0.5f), r.getRight(), r.getCentreY(), false);
+        juce::ColourGradient grad (Hardware::cyan.withAlpha (0.5f), r.getX(), r.getCentreY(),
+                                   Hardware::violet.withAlpha (0.5f), r.getRight(), r.getCentreY(), false);
         g.setGradientFill (grad);
         g.strokePath (curvePath, juce::PathStrokeType (10.0f, juce::PathStrokeType::curved,
                                                        juce::PathStrokeType::rounded));
     }
     // Main stroke
     {
-        juce::ColourGradient grad (Chrono::cyan, r.getX(), r.getCentreY(),
-                                   Chrono::violet, r.getRight(), r.getCentreY(), false);
+        juce::ColourGradient grad (Hardware::cyan, r.getX(), r.getCentreY(),
+                                   Hardware::violet, r.getRight(), r.getCentreY(), false);
         g.setGradientFill (grad);
         g.strokePath (curvePath, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved,
                                                        juce::PathStrokeType::rounded));
@@ -440,11 +575,11 @@ void TimeCurveEditor::paint (juce::Graphics& g)
     g.strokePath (curvePath, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved,
                                                    juce::PathStrokeType::rounded));
 
-    // Magenta pulse where slope is steep (reverse sections)
+    // Cyan pulse where slope is steep (reverse sections)
     // (approximate: highlight segments where y increases fast)
     {
         const float pulse = 0.5f + 0.5f * std::sin (pulsePhase * 2.0f);
-        g.setColour (Chrono::magenta.withAlpha (0.25f + 0.35f * pulse));
+        g.setColour (Hardware::cyan.withAlpha (0.25f + 0.35f * pulse));
         // Draw small markers at points where the curve bends hard
         for (size_t i = 1; i < points.size(); ++i)
         {
@@ -464,10 +599,10 @@ void TimeCurveEditor::paint (juce::Graphics& g)
     {
         const auto px = pointToPixel (points[i].x, points[i].y);
         const bool isDrag = ((int) i == dragIndex);
-        g.setColour (isDrag ? Chrono::amber : Chrono::cyan);
+        g.setColour (isDrag ? Hardware::amber : Hardware::cyan);
         g.fillEllipse (px.x - (isDrag ? 8 : 6), px.y - (isDrag ? 8 : 6),
                        isDrag ? 16 : 12, isDrag ? 16 : 12);
-        g.setColour (Chrono::bg);
+        g.setColour (Hardware::frameBot);
         g.fillEllipse (px.x - 3, px.y - 3, 6, 6);
     }
 
@@ -485,7 +620,7 @@ void TimeCurveEditor::paint (juce::Graphics& g)
         {
             const float tx = beamX - i * 3.0f;
             if (tx < r.getX()) break;
-            g.setColour (Chrono::cyan.withAlpha (0.12f * (1.0f - i / 9.0f)));
+            g.setColour (Hardware::cyan.withAlpha (0.12f * (1.0f - i / 9.0f)));
             g.drawVerticalLine ((int) tx, r.getY(), r.getBottom());
         }
         juce::ignoreUnused (beamGrad);
@@ -499,9 +634,9 @@ TriggerPad::TriggerPad (const juce::String& name, juce::Colour accent)
     : juce::TextButton (name), accentColour (accent)
 {
     setClickingTogglesState (true);
-    setColour (juce::TextButton::buttonColourId, Chrono::bgPanel.brighter (0.05f));
-    setColour (juce::TextButton::textColourOffId, Chrono::textDim);
-    setColour (juce::TextButton::textColourOnId, Chrono::textBright);
+    setColour (juce::TextButton::buttonColourId, Hardware::panel.brighter (0.05f));
+    setColour (juce::TextButton::textColourOffId, Hardware::textDim);
+    setColour (juce::TextButton::textColourOnId, Hardware::textBright);
 }
 
 void TriggerPad::clicked()
@@ -527,45 +662,68 @@ void TriggerPad::timerCallback()
 
 void TriggerPad::paintButton (juce::Graphics& g, bool highlighted, bool down)
 {
-    auto bounds = getLocalBounds().toFloat().reduced (2.0f);
+    auto bounds = getLocalBounds().toFloat().reduced (3.0f);
     const bool isOn = getToggleState();
 
-    // Base
-    juce::Colour base = findColour (juce::TextButton::buttonColourId);
-    if (down) base = base.darker (0.15f);
-    else if (highlighted) base = base.brighter (0.1f);
+    // Socket shadow
+    g.setColour (juce::Colours::black.withAlpha (0.6f));
+    g.fillRoundedRectangle (bounds.expanded (2.0f).translated (0.0f, 2.0f), 10.0f);
 
-    // Glow when on (pulsing)
+    // Metal button cap
+    const auto capTop = down ? Hardware::metalLo : Hardware::metalMid;
+    juce::ColourGradient cap (capTop,
+                              0.0f, bounds.getY(), capTop.darker (0.35f), 0.0f, bounds.getBottom(), false);
+    if (highlighted && ! down)
+        cap = juce::ColourGradient (Hardware::metalHi, 0.0f, bounds.getY(),
+                                    Hardware::metalMid, 0.0f, bounds.getBottom(), false);
+    g.setGradientFill (cap);
+    g.fillRoundedRectangle (bounds, 8.0f);
+    g.setColour (juce::Colours::black.withAlpha (0.55f));
+    g.drawRoundedRectangle (bounds.reduced (0.5f), 8.0f, 1.0f);
+    // top highlight
+    g.setColour (juce::Colours::white.withAlpha (0.25f));
+    g.drawLine (bounds.getX() + 10.0f, bounds.getY() + 1.5f,
+                bounds.getRight() - 10.0f, bounds.getY() + 1.5f, 1.0f);
+
     if (isOn)
     {
+        // LED under-glow in the accent color
         const float pulse = 0.5f + 0.5f * std::sin (glowPulse * 2.0f);
-        g.setColour (accentColour.withAlpha (0.18f + 0.14f * pulse));
-        g.fillRoundedRectangle (bounds.expanded (6.0f), 14.0f);
+        juce::ColourGradient glow (accentColour.withAlpha (0.35f + 0.2f * pulse),
+                                   bounds.getCentre(),
+                                   accentColour.withAlpha (0.0f),
+                                   bounds.getCentre() + juce::Point<float> (bounds.getWidth() * 0.6f, 0),
+                                   true);
+        g.setGradientFill (glow);
+        g.fillRoundedRectangle (bounds.expanded (8.0f), 14.0f);
+        g.setColour (accentColour);
+        g.drawRoundedRectangle (bounds.reduced (1.5f), 7.0f, 2.0f);
     }
 
-    g.setColour (base);
-    g.fillRoundedRectangle (bounds, 12.0f);
-    g.setColour (isOn ? accentColour : Chrono::textDim.withAlpha (0.4f));
-    g.drawRoundedRectangle (bounds, 12.0f, isOn ? 2.5f : 1.0f);
-
-    // Ripple
-    if (ripple > 0.0f)
+    // LED dot (top-left of the cap)
+    const float ledX = bounds.getX() + 12.0f, ledY = bounds.getY() + 12.0f;
+    if (isOn)
     {
-        const float r = (1.0f - ripple) * juce::jmax (bounds.getWidth(), bounds.getHeight()) * 0.7f;
-        g.setColour (accentColour.withAlpha (ripple * 0.7f));
-        g.drawEllipse (bounds.getCentreX() - r, bounds.getCentreY() - r * 0.5f,
-                       r * 2.0f, r, 2.5f);
+        juce::ColourGradient led (accentColour.brighter (0.4f), ledX, ledY,
+                                  accentColour.darker (0.4f), ledX + 4, ledY + 4, false);
+        g.setGradientFill (led);
+        g.fillEllipse (ledX - 4, ledY - 4, 8, 8);
+        g.setColour (accentColour.withAlpha (0.5f));
+        g.fillEllipse (ledX - 7, ledY - 7, 14, 14);
+    }
+    else
+    {
+        g.setColour (juce::Colours::black.withAlpha (0.7f));
+        g.fillEllipse (ledX - 4, ledY - 4, 8, 8);
     }
 
-    // Text
-    g.setFont (juce::Font (15.0f, juce::Font::bold));
-    g.setColour (findColour (isOn ? juce::TextButton::textColourOnId
-                                  : juce::TextButton::textColourOffId));
+    // Engraved label
+    g.setFont (juce::Font (14.0f, juce::Font::bold));
+    g.setColour (juce::Colours::black.withAlpha (0.6f));
+    g.drawText (getButtonText(), bounds.translated (0.0f, 1.5f),
+                juce::Justification::centred, false);
+    g.setColour (isOn ? Hardware::textBright : Hardware::textMetal);
     g.drawText (getButtonText(), bounds, juce::Justification::centred, false);
-
-    // Status dot
-    g.setColour (isOn ? accentColour : Chrono::textDim.withAlpha (0.3f));
-    g.fillEllipse (bounds.getX() + 10, bounds.getCentreY() - 4, 8, 8);
 }
 
 //==============================================================================
@@ -574,8 +732,8 @@ void TriggerPad::paintButton (juce::Graphics& g, bool highlighted, bool down)
 DiceButton::DiceButton()
     : juce::TextButton ("")
 {
-    setColour (juce::TextButton::buttonColourId, Chrono::bgPanel.brighter (0.08f));
-    setColour (juce::TextButton::textColourOffId, Chrono::amber);
+    setColour (juce::TextButton::buttonColourId, Hardware::panel.brighter (0.08f));
+    setColour (juce::TextButton::textColourOffId, Hardware::amber);
 }
 
 void DiceButton::clicked()
@@ -605,34 +763,32 @@ void DiceButton::timerCallback()
 void DiceButton::paintButton (juce::Graphics& g, bool highlighted, bool down)
 {
     auto bounds = getLocalBounds().toFloat().reduced (2.0f);
-    const auto centre = bounds.getCentre();
 
-    if (highlighted || spinning)
-    {
-        g.setColour (Chrono::amber.withAlpha (0.22f));
-        g.fillRoundedRectangle (bounds.expanded (3.0f), 12.0f);
-    }
-    g.setColour (findColour (juce::TextButton::buttonColourId));
-    g.fillRoundedRectangle (bounds, 10.0f);
-    g.setColour (Chrono::amber.withAlpha (0.6f));
-    g.drawRoundedRectangle (bounds, 10.0f, 1.5f);
+    // Amber under-glow (the money button)
+    const float pulse = spinning ? (0.5f + 0.5f * std::sin (spinPhase * 2.0f)) : 0.0f;
+    g.setColour (Hardware::amber.withAlpha (0.25f + 0.25f * pulse + (highlighted ? 0.12f : 0.0f)));
+    g.fillRoundedRectangle (bounds.expanded (4.0f), 12.0f);
 
-    // Dice face (rotates while spinning)
-    g.saveState();
-    g.addTransform (juce::AffineTransform::rotation (spinning ? spinPhase : 0.0f,
-                                                     centre.x, centre.y));
-    const float s = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.32f;
-    g.setColour (Chrono::bg);
-    g.fillRoundedRectangle (centre.x - s, centre.y - s, s * 2, s * 2, 6.0f);
-    g.setColour (Chrono::amber);
-    // 5-pip face
-    const float o = s * 0.5f;
-    g.fillEllipse (centre.x - 3, centre.y - 3, 6, 6);
-    g.fillEllipse (centre.x - o - 3, centre.y - o - 3, 6, 6);
-    g.fillEllipse (centre.x + o - 3, centre.y - o - 3, 6, 6);
-    g.fillEllipse (centre.x - o - 3, centre.y + o - 3, 6, 6);
-    g.fillEllipse (centre.x + o - 3, centre.y + o - 3, 6, 6);
-    g.restoreState();
+    // Shadow + metal cap
+    g.setColour (juce::Colours::black.withAlpha (0.55f));
+    g.fillRoundedRectangle (bounds.translated (0.0f, 2.0f), 9.0f);
+    const auto capTopA = down ? Hardware::amber.darker (0.35f) : Hardware::amber;
+    juce::ColourGradient cap (capTopA,
+                              0.0f, bounds.getY(), capTopA.darker (0.35f), 0.0f, bounds.getBottom(), false);
+    if (highlighted && ! down)
+        cap = juce::ColourGradient (Hardware::amber.brighter (0.25f), 0.0f, bounds.getY(),
+                                    Hardware::amber, 0.0f, bounds.getBottom(), false);
+    g.setGradientFill (cap);
+    g.fillRoundedRectangle (bounds, 9.0f);
+    g.setColour (juce::Colours::black.withAlpha (0.5f));
+    g.drawRoundedRectangle (bounds.reduced (0.5f), 9.0f, 1.0f);
+
+    // Engraved label
+    g.setFont (juce::Font (15.0f, juce::Font::bold));
+    g.setColour (juce::Colours::black.withAlpha (0.55f));
+    g.drawText ("GENERATE", bounds.translated (0.0f, 1.5f), juce::Justification::centred, false);
+    g.setColour (juce::Colour (0xff2a1a00));
+    g.drawText ("GENERATE", bounds, juce::Justification::centred, false);
 }
 
 //==============================================================================
@@ -641,7 +797,7 @@ void DiceButton::paintButton (juce::Graphics& g, bool highlighted, bool down)
 WaveformDisplay::WaveformDisplay (QFlipProcessor& p)
     : processor (p)
 {
-    visualiser.setColours (Chrono::bg, Chrono::cyan);
+    visualiser.setColours (Hardware::frameBot, Hardware::cyan);
     visualiser.setInterceptsMouseClicks (false, false);
     addAndMakeVisible (visualiser);
     startTimerHz (30);
@@ -659,13 +815,13 @@ void WaveformDisplay::resized()
 
 void WaveformDisplay::paint (juce::Graphics& g)
 {
-    g.setColour (Chrono::bg);
+    g.setColour (Hardware::frameBot);
     g.fillRoundedRectangle (getLocalBounds().toFloat(), 10.0f);
 
     // Draw captured audio if present
     if (hasCapture && captureView.getNumSamples() > 0)
     {
-        g.setColour (Chrono::violet.withAlpha (0.85f));
+        g.setColour (Hardware::violet.withAlpha (0.85f));
         auto r = getLocalBounds().toFloat().reduced (8.0f);
         const int n = captureView.getNumSamples();
         const float* d = captureView.getReadPointer (0);
@@ -683,7 +839,7 @@ void WaveformDisplay::paint (juce::Graphics& g)
     }
 
     // Frame
-    g.setColour ((captureMode ? Chrono::amber : Chrono::cyan).withAlpha (0.5f));
+    g.setColour ((captureMode ? Hardware::amber : Hardware::cyan).withAlpha (0.5f));
     g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (1.0f), 10.0f,
                             captureMode ? 2.5f : 1.5f);
 
@@ -697,7 +853,7 @@ void WaveformDisplay::paint (juce::Graphics& g)
 
     if (label.isNotEmpty())
     {
-        g.setColour (captureMode ? Chrono::amber : juce::Colours::white.withAlpha (0.85f));
+        g.setColour (captureMode ? Hardware::amber : juce::Colours::white.withAlpha (0.85f));
         g.setFont (juce::Font (16.0f, juce::Font::bold));
         g.drawText (label, getLocalBounds(), juce::Justification::centred);
     }
@@ -772,19 +928,19 @@ QFlipEditor::QFlipEditor (QFlipProcessor& p)
     playTab.setClickingTogglesState (true);
     playTab.setToggleState (true, juce::dontSendNotification);
     editTab.setClickingTogglesState (true);
-    playTab.setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
-    playTab.setColour (juce::TextButton::textColourOnId, Chrono::cyan);
-    playTab.setColour (juce::TextButton::textColourOffId, Chrono::textDim);
-    editTab.setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
-    editTab.setColour (juce::TextButton::textColourOnId, Chrono::cyan);
-    editTab.setColour (juce::TextButton::textColourOffId, Chrono::textDim);
+    playTab.setColour (juce::TextButton::buttonColourId, Hardware::panel);
+    playTab.setColour (juce::TextButton::textColourOnId, Hardware::cyan);
+    playTab.setColour (juce::TextButton::textColourOffId, Hardware::textDim);
+    editTab.setColour (juce::TextButton::buttonColourId, Hardware::panel);
+    editTab.setColour (juce::TextButton::textColourOnId, Hardware::cyan);
+    editTab.setColour (juce::TextButton::textColourOffId, Hardware::textDim);
     playTab.onClick = [this] { setView (true); };
     editTab.onClick = [this] { setView (false); };
     addAndMakeVisible (playTab);
     addAndMakeVisible (editTab);
 
     presetBox.setTextWhenNothingSelected ("Select Preset");
-    presetBox.setColour (juce::ComboBox::textColourId, Chrono::textBright);
+    presetBox.setColour (juce::ComboBox::textColourId, Hardware::textBright);
     addAndMakeVisible (presetBox);
     presetBox.onChange = [this]
     {
@@ -793,16 +949,24 @@ QFlipEditor::QFlipEditor (QFlipProcessor& p)
             applyPreset (presets[idx]);
     };
 
-    diceButton.onDice = [this] { randomizePreset(); };
+    diceButton.onDice = [this] { generateVibe(); };
     addAndMakeVisible (diceButton);
+
+    vibeBox.addItem ("DARK", 1);
+    vibeBox.addItem ("GLITCH", 2);
+    vibeBox.addItem ("SMOOTH", 3);
+    vibeBox.addItem ("WILD", 4);
+    vibeBox.setSelectedId (1, juce::dontSendNotification);
+    vibeBox.setColour (juce::ComboBox::textColourId, Hardware::amber);
+    addAndMakeVisible (vibeBox);
 
     prevPresetButton.onClick = [this] { cyclePreset (-1); };
     nextPresetButton.onClick = [this] { cyclePreset (1); };
     savePresetButton.onClick = [this] { promptSavePreset(); };
     for (auto* b : { &prevPresetButton, &nextPresetButton, &savePresetButton })
     {
-        b->setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
-        b->setColour (juce::TextButton::textColourOffId, Chrono::cyan);
+        b->setColour (juce::TextButton::buttonColourId, Hardware::panel);
+        b->setColour (juce::TextButton::textColourOffId, Hardware::cyan);
         addAndMakeVisible (b);
     }
 
@@ -855,94 +1019,48 @@ QFlipEditor::QFlipEditor (QFlipProcessor& p)
     pitchSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     pitchSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 18);
     pitchSlider.setTextValueSuffix (" st");
-    pitchSlider.setColour (juce::Slider::rotarySliderFillColourId, Chrono::cyan);
-    pitchSlider.setColour (juce::Slider::textBoxTextColourId, Chrono::textBright);
+    pitchSlider.setColour (juce::Slider::rotarySliderFillColourId, Hardware::cyan);
+    pitchSlider.setColour (juce::Slider::textBoxTextColourId, Hardware::textBright);
     pitchSlider.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
     addAndMakeVisible (pitchSlider);
 
     gainSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     gainSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 18);
-    gainSlider.setColour (juce::Slider::rotarySliderFillColourId, Chrono::violet);
-    gainSlider.setColour (juce::Slider::textBoxTextColourId, Chrono::textBright);
+    gainSlider.setColour (juce::Slider::rotarySliderFillColourId, Hardware::violet);
+    gainSlider.setColour (juce::Slider::textBoxTextColourId, Hardware::textBright);
     gainSlider.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
     addAndMakeVisible (gainSlider);
 
     mixSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     mixSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 18);
     mixSlider.setTextValueSuffix (" %");
-    mixSlider.setColour (juce::Slider::rotarySliderFillColourId, Chrono::amber);
-    mixSlider.setColour (juce::Slider::textBoxTextColourId, Chrono::textBright);
+    mixSlider.setColour (juce::Slider::rotarySliderFillColourId, Hardware::amber);
+    mixSlider.setColour (juce::Slider::textBoxTextColourId, Hardware::textBright);
     mixSlider.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
     addAndMakeVisible (mixSlider);
 
     // Knob name labels UNDER the knobs (v0.4 — never on the knob itself)
     for (auto* l : { &pitchLabel, &gainLabel, &mixLabel })
     {
-        l->setColour (juce::Label::textColourId, Chrono::textDim);
+        l->setColour (juce::Label::textColourId, Hardware::textDim);
         l->setJustificationType (juce::Justification::centred);
         l->setFont (juce::Font (11.0f, juce::Font::bold));
         addAndMakeVisible (l);
     }
 
-    // ---- Warp zone strip (v0.4) ----
-    zonePaintButton.setClickingTogglesState (true);
-    zonePaintButton.setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
-    zonePaintButton.setColour (juce::TextButton::textColourOnId, Chrono::cyan);
-    zonePaintButton.setColour (juce::TextButton::textColourOffId, Chrono::textDim);
-    zonePaintButton.onClick = [this]
-    {
-        curveEditor.setZonePaintMode (zonePaintButton.getToggleState());
-    };
-    addAndMakeVisible (zonePaintButton);
-
-    for (int i = 0; i < 5; ++i)
-    {
-        auto& sw = zoneSwatches[i];
-        sw.setButtonText (QFlipProcessor::getZoneTypeName (i));
-        sw.setClickingTogglesState (true);
-        sw.setRadioGroupId (777);
-        if (i == 0) sw.setToggleState (true, juce::dontSendNotification);
-        const auto zc = QFlipProcessor::getZoneTypeColour (i);
-        sw.setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
-        sw.setColour (juce::TextButton::buttonOnColourId, zc.withAlpha (0.35f));
-        sw.setColour (juce::TextButton::textColourOffId, Chrono::textDim);
-        sw.setColour (juce::TextButton::textColourOnId, zc);
-        sw.onClick = [this, i]
-        {
-            curveEditor.setPaintZoneType (i);
-            if (! zonePaintButton.getToggleState())
-            {
-                zonePaintButton.setToggleState (true, juce::dontSendNotification);
-                curveEditor.setZonePaintMode (true);
-            }
-        };
-        addAndMakeVisible (sw);
-    }
-
-    zoneClearButton.setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
-    zoneClearButton.setColour (juce::TextButton::textColourOffId, Chrono::textDim);
-    zoneClearButton.onClick = [this] { curveEditor.clearZones(); };
-    addAndMakeVisible (zoneClearButton);
-
-    zoneHintLabel.setColour (juce::Label::textColourId, Chrono::textDim);
-    zoneHintLabel.setJustificationType (juce::Justification::centredLeft);
-    zoneHintLabel.setFont (juce::Font (10.0f));
-    zoneHintLabel.setText ("WARP ZONES — paint FX onto the timeline", juce::dontSendNotification);
-    addAndMakeVisible (zoneHintLabel);
-
     // ---- EDIT view ----
     curveOnButton.setClickingTogglesState (true);
-    curveOnButton.setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
-    curveOnButton.setColour (juce::TextButton::textColourOnId, Chrono::cyan);
-    curveOnButton.setColour (juce::TextButton::textColourOffId, Chrono::textDim);
+    curveOnButton.setColour (juce::TextButton::buttonColourId, Hardware::panel);
+    curveOnButton.setColour (juce::TextButton::textColourOnId, Hardware::cyan);
+    curveOnButton.setColour (juce::TextButton::textColourOffId, Hardware::textDim);
     addAndMakeVisible (curveOnButton);
 
     const char* curveNames[7] = { "Reverse", "Tape Stop", "Tape Start", "Stutter", "Scratch", "Half", "Double" };
     for (int i = 0; i < 7; ++i)
     {
         curvePresetButtons[i].setButtonText (curveNames[i]);
-        curvePresetButtons[i].setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
-        curvePresetButtons[i].setColour (juce::TextButton::textColourOffId, Chrono::textDim);
+        curvePresetButtons[i].setColour (juce::TextButton::buttonColourId, Hardware::panel);
+        curvePresetButtons[i].setColour (juce::TextButton::textColourOffId, Hardware::textDim);
         curvePresetButtons[i].onClick = [this, i] { curveEditor.setCurvePreset (i); };
         addAndMakeVisible (curvePresetButtons[i]);
     }
@@ -955,7 +1073,7 @@ QFlipEditor::QFlipEditor (QFlipProcessor& p)
 
     revVerbMixSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     revVerbMixSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 18);
-    revVerbMixSlider.setColour (juce::Slider::rotarySliderFillColourId, Chrono::violet);
+    revVerbMixSlider.setColour (juce::Slider::rotarySliderFillColourId, Hardware::violet);
     addAndMakeVisible (revVerbMixSlider);
 
     revDlyTimeBox.addItemList ({ "1/8", "1/16", "1/32" }, 1);
@@ -963,30 +1081,30 @@ QFlipEditor::QFlipEditor (QFlipProcessor& p)
 
     revDlyFbSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     revDlyFbSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 18);
-    revDlyFbSlider.setColour (juce::Slider::rotarySliderFillColourId, Chrono::cyan);
+    revDlyFbSlider.setColour (juce::Slider::rotarySliderFillColourId, Hardware::cyan);
     addAndMakeVisible (revDlyFbSlider);
 
     revDlyMixSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     revDlyMixSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 18);
-    revDlyMixSlider.setColour (juce::Slider::rotarySliderFillColourId, Chrono::cyan);
+    revDlyMixSlider.setColour (juce::Slider::rotarySliderFillColourId, Hardware::cyan);
     addAndMakeVisible (revDlyMixSlider);
 
     xoverLowSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     xoverLowSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 18);
     xoverLowSlider.setTextValueSuffix (" Hz");
-    xoverLowSlider.setColour (juce::Slider::rotarySliderFillColourId, Chrono::amber);
+    xoverLowSlider.setColour (juce::Slider::rotarySliderFillColourId, Hardware::amber);
     addAndMakeVisible (xoverLowSlider);
 
     xoverHighSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     xoverHighSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 18);
     xoverHighSlider.setTextValueSuffix (" Hz");
-    xoverHighSlider.setColour (juce::Slider::rotarySliderFillColourId, Chrono::amber);
+    xoverHighSlider.setColour (juce::Slider::rotarySliderFillColourId, Hardware::amber);
     addAndMakeVisible (xoverHighSlider);
 
     // EDIT-view knob name labels (v0.4 — under each knob)
     for (auto* l : { &revVerbMixLabel, &revDlyFbLabel, &revDlyMixLabel, &xoverLowLabel, &xoverHighLabel })
     {
-        l->setColour (juce::Label::textColourId, Chrono::textDim);
+        l->setColour (juce::Label::textColourId, Hardware::textDim);
         l->setJustificationType (juce::Justification::centred);
         l->setFont (juce::Font (10.0f, juce::Font::bold));
         addAndMakeVisible (l);
@@ -999,9 +1117,9 @@ QFlipEditor::QFlipEditor (QFlipProcessor& p)
     }
 
     captureButton.setClickingTogglesState (true);
-    captureButton.setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
-    captureButton.setColour (juce::TextButton::textColourOnId, Chrono::amber);
-    captureButton.setColour (juce::TextButton::textColourOffId, Chrono::textDim);
+    captureButton.setColour (juce::TextButton::buttonColourId, Hardware::panel);
+    captureButton.setColour (juce::TextButton::textColourOnId, Hardware::amber);
+    captureButton.setColour (juce::TextButton::textColourOffId, Hardware::textDim);
     captureButton.onClick = [this]
     {
         if (captureButton.getToggleState())
@@ -1015,8 +1133,8 @@ QFlipEditor::QFlipEditor (QFlipProcessor& p)
     };
     addAndMakeVisible (captureButton);
 
-    tapeStartButton.setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
-    tapeStartButton.setColour (juce::TextButton::textColourOffId, Chrono::cyan);
+    tapeStartButton.setColour (juce::TextButton::buttonColourId, Hardware::panel);
+    tapeStartButton.setColour (juce::TextButton::textColourOffId, Hardware::cyan);
     tapeStartButton.onClick = [this] { processor.triggerTapeStart(); };
     addAndMakeVisible (tapeStartButton);
 
@@ -1082,18 +1200,63 @@ void QFlipEditor::setView (bool playView)
 
 void QFlipEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (Chrono::bg);
+    auto bounds = getLocalBounds().toFloat();
 
-    // Title
-    g.setColour (Chrono::textBright);
-    g.setFont (juce::Font (34.0f, juce::Font::bold));
-    g.drawText ("QFLIP", 20, 52, 200, 36, juce::Justification::left);
-    g.setColour (Chrono::cyan);
-    g.setFont (juce::Font (11.0f, juce::Font::bold));
-    g.drawText ("C H R O N O", 22, 86, 200, 16, juce::Justification::left);
+    // Brushed metal frame (vertical gradient)
+    juce::ColourGradient frame (Hardware::frameTop, 0.0f, 0.0f,
+                                Hardware::frameBot, 0.0f, bounds.getHeight(), false);
+    g.setGradientFill (frame);
+    g.fillRoundedRectangle (bounds, 14.0f);
+
+    // Subtle brushed lines
+    g.setColour (juce::Colours::white.withAlpha (0.03f));
+    for (float y = 8.0f; y < bounds.getHeight(); y += 5.0f)
+        g.drawHorizontalLine ((int) y, 8.0f, bounds.getWidth() - 8.0f);
+
+    // Inner black panel
+    auto panel = bounds.reduced (14.0f);
+    g.setColour (Hardware::panel);
+    g.fillRoundedRectangle (panel, 10.0f);
+    g.setColour (juce::Colours::black.withAlpha (0.7f));
+    g.drawRoundedRectangle (panel.reduced (0.5f), 10.0f, 1.5f);
+
+    // Corner screws
+    const float sr = 9.0f;
+    for (auto [sx, sy] : { std::make_pair (panel.getX() + 16.0f, panel.getY() + 16.0f),
+                           std::make_pair (panel.getRight() - 16.0f, panel.getY() + 16.0f),
+                           std::make_pair (panel.getX() + 16.0f, panel.getBottom() - 16.0f),
+                           std::make_pair (panel.getRight() - 16.0f, panel.getBottom() - 16.0f) })
+    {
+        juce::ColourGradient screw (Hardware::metalHi, sx - 4, sy - 4,
+                                    Hardware::metalLo, sx + 4, sy + 4, false);
+        g.setGradientFill (screw);
+        g.fillEllipse (sx - sr, sy - sr, sr * 2.0f, sr * 2.0f);
+        g.setColour (juce::Colours::black.withAlpha (0.8f));
+        g.drawLine (sx - sr * 0.6f, sy, sx + sr * 0.6f, sy, 2.0f);
+    }
+
+    // 3D metal wordmark
+    const float titleX = 34.0f, titleY = 30.0f;
+    g.setFont (juce::Font (40.0f, juce::Font::bold));
+    // drop shadow (emboss)
+    g.setColour (juce::Colours::black.withAlpha (0.85f));
+    g.drawText ("QFLIP", titleX + 2, titleY + 3, 220, 44, juce::Justification::left);
+    // brushed face
+    juce::ColourGradient face (Hardware::metalHi, 0.0f, titleY,
+                               Hardware::metalMid, 0.0f, titleY + 44.0f, false);
+    g.setGradientFill (face);
+    g.drawText ("QFLIP", titleX, titleY, 220, 44, juce::Justification::left);
+    // top highlight line
+    g.setColour (juce::Colours::white.withAlpha (0.35f));
+    g.drawText ("QFLIP", titleX, titleY - 1, 220, 44, juce::Justification::left);
+
+    g.setColour (Hardware::cyan);
+    g.setFont (juce::Font (12.0f, juce::Font::bold));
+    g.drawText ("T I M E   W A R P   U N I T", titleX + 2, titleY + 46, 260, 16,
+                juce::Justification::left);
 
     if (logoImage.isValid())
-        g.drawImageWithin (logoImage, getWidth() - 52, 58, 32, 32,
+        g.drawImageWithin (logoImage, getWidth() - 66, 30, 36, 36,
                            juce::RectanglePlacement::centred, false);
 }
 
@@ -1101,31 +1264,30 @@ void QFlipEditor::resized()
 {
     auto area = getLocalBounds().reduced (16);
 
-    // Header row: tabs | preset | dice
+    // Header row: wordmark is painted at left (x<270); controls start at x=280
     auto header = area.removeFromTop (40);
-    playTab.setBounds (header.removeFromLeft (80));
-    header.removeFromLeft (6);
-    editTab.setBounds (header.removeFromLeft (80));
-    header.removeFromLeft (12);
-    prevPresetButton.setBounds (header.removeFromLeft (34));
-    header.removeFromLeft (4);
-    nextPresetButton.setBounds (header.removeFromLeft (34));
-    header.removeFromLeft (4);
-    diceButton.setBounds (header.removeFromLeft (44));
-    header.removeFromLeft (6);
-    savePresetButton.setBounds (header.removeFromRight (70));
+    header.removeFromLeft (264); // painted QFLIP wordmark zone
+    savePresetButton.setBounds (header.removeFromRight (64));
+    header.removeFromRight (8);
+    vibeBox.setBounds (header.removeFromRight (86));
+    header.removeFromRight (8);
+    diceButton.setBounds (header.removeFromRight (104)); // GENERATE
+    header.removeFromRight (8);
+    nextPresetButton.setBounds (header.removeFromRight (30));
+    header.removeFromRight (4);
+    prevPresetButton.setBounds (header.removeFromRight (30));
+    header.removeFromRight (8);
     presetBox.setBounds (header);
 
     area.removeFromTop (8);
-    area.removeFromTop (96); // title (painted)
+    // View tabs under the wordmark (painted zone y 56..152)
+    playTab.setBounds (34, 100, 96, 34);
+    editTab.setBounds (136, 100, 96, 34);
+    area.removeFromTop (96); // title + tabs (painted)
 
     // PLAY view components
     const bool pv = showPlayView;
     curveEditor.setVisible (pv);
-    zonePaintButton.setVisible (pv);
-    for (int i = 0; i < 5; ++i) zoneSwatches[i].setVisible (pv);
-    zoneClearButton.setVisible (pv);
-    zoneHintLabel.setVisible (pv);
     for (auto* pad : { &reversePad, &tapeStopPad, &revVerbPad, &revDlyPad, &stutterPad })
         pad->setVisible (pv);
     pitchSlider.setVisible (pv);
@@ -1160,33 +1322,21 @@ void QFlipEditor::resized()
 
     if (pv)
     {
-        // Hero curve
-        curveEditor.setBounds (area.removeFromTop (292));
+        // LCD hero display
+        curveEditor.setBounds (area.removeFromTop (278));
+        area.removeFromTop (8);
+
+        // 5 hardware buttons (chunky metal + LED)
+        auto padRow = area.removeFromTop (62);
+        const int pw = padRow.getWidth() / 5;
+        reversePad.setBounds (padRow.removeFromLeft (pw).reduced (5, 4));
+        tapeStopPad.setBounds (padRow.removeFromLeft (pw).reduced (5, 4));
+        revVerbPad.setBounds (padRow.removeFromLeft (pw).reduced (5, 4));
+        revDlyPad.setBounds (padRow.removeFromLeft (pw).reduced (5, 4));
+        stutterPad.setBounds (padRow.reduced (5, 4));
         area.removeFromTop (6);
 
-        // Warp zone strip
-        auto zstrip = area.removeFromTop (28);
-        zonePaintButton.setBounds (zstrip.removeFromLeft (110));
-        zstrip.removeFromLeft (8);
-        zoneHintLabel.setBounds (zstrip.removeFromLeft (250));
-        zstrip.removeFromLeft (8);
-        for (int i = 0; i < 5; ++i)
-            zoneSwatches[i].setBounds (zstrip.removeFromLeft (72).reduced (2));
-        zstrip.removeFromLeft (4);
-        zoneClearButton.setBounds (zstrip.removeFromLeft (70));
-        area.removeFromTop (8);
-
-        // 5 trigger pads
-        auto padRow = area.removeFromTop (64);
-        const int pw = padRow.getWidth() / 5;
-        reversePad.setBounds (padRow.removeFromLeft (pw).reduced (4));
-        tapeStopPad.setBounds (padRow.removeFromLeft (pw).reduced (4));
-        revVerbPad.setBounds (padRow.removeFromLeft (pw).reduced (4));
-        revDlyPad.setBounds (padRow.removeFromLeft (pw).reduced (4));
-        stutterPad.setBounds (padRow.reduced (4));
-        area.removeFromTop (8);
-
-        // Mini knobs + waveform (knob cells are 132 tall: knob + value + name label)
+        // Chrome knobs + waveform (knob cells: knob + value + engraved label)
         auto bottom = area;
         auto knobs = bottom.removeFromLeft (300);
         {
@@ -1449,6 +1599,7 @@ void QFlipEditor::applyPreset (const QFlipPreset& p)
     }
     processor.setWarpZones (p.zones);
     curveEditor.syncZonesFromProcessor();
+    syncPadsFromProcessor();
 }
 
 void QFlipEditor::cyclePreset (int direction)
@@ -1463,9 +1614,114 @@ void QFlipEditor::cyclePreset (int direction)
 
 void QFlipEditor::randomizePreset()
 {
-    if (presets.isEmpty()) return;
-    const int idx = juce::Random::getSystemRandom().nextInt (presets.size());
-    presetBox.setSelectedItemIndex (idx); // fires onChange -> applyPreset
+    generateVibe();
+}
+
+// TONEFLX-style GENERATE: curated vibe-based sound generation
+void QFlipEditor::generateVibe()
+{
+    auto& rng = juce::Random::getSystemRandom();
+    const int vibe = vibeBox.getSelectedId(); // 1=DARK 2=GLITCH 3=SMOOTH 4=WILD
+
+    auto setF = [this] (const char* id, float v)
+    {
+        if (auto* param = processor.apvts.getParameter (id))
+            param->setValueNotifyingHost (param->convertTo0to1 (v));
+    };
+    auto setB = [this] (const char* id, bool b)
+    {
+        if (auto* param = processor.apvts.getParameter (id))
+            param->setValueNotifyingHost (b ? 1.0f : 0.0f);
+    };
+    auto setC = [this] (const char* id, int idx, int maxIdx)
+    {
+        if (auto* param = processor.apvts.getParameter (id))
+            param->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, (float) idx / (float) maxIdx));
+    };
+    auto rr = [&rng] (float lo, float hi) { return lo + rng.nextFloat() * (hi - lo); };
+
+    std::vector<QFlipProcessor::WarpZone> zones;
+    auto addZone = [&zones] (float s, float e, int type)
+    {
+        zones.push_back ({ juce::jlimit (0.0f, 1.0f, s), juce::jlimit (0.0f, 1.0f, e), type });
+    };
+
+    // Sensible defaults first
+    setF (QFlipProcessor::kParamGain, 1.0f);
+    setF (QFlipProcessor::kParamMix, rr (0.7f, 1.0f));
+    setB (QFlipProcessor::kParamCurveOn, true);
+    setC (QFlipProcessor::kParamLoopBars, 1, 2);
+
+    if (vibe == 1) // DARK — reversed, pitched down, huge space
+    {
+        setB (QFlipProcessor::kParamReverse, true);
+        setF (QFlipProcessor::kParamPitch, rr (-12.0f, -5.0f));
+        setB (QFlipProcessor::kParamRevVerbOn, true);
+        setC (QFlipProcessor::kParamRevVerbLen, 3, 3);
+        setF (QFlipProcessor::kParamRevVerbMix, rr (0.4f, 0.7f));
+        setB (QFlipProcessor::kParamRevDlyOn, rng.nextBool());
+        setF (QFlipProcessor::kParamRevDlyMix, rr (0.2f, 0.45f));
+        curveEditor.setCurvePreset (0); // Reverse
+        addZone (rr (0.0f, 0.2f), rr (0.35f, 0.55f), 2); // Filter
+        addZone (rr (0.55f, 0.7f), rr (0.8f, 1.0f), 0);  // Reverse
+    }
+    else if (vibe == 2) // GLITCH — stutters, jumps, digital chaos
+    {
+        setB (QFlipProcessor::kParamReverse, rng.nextBool());
+        setF (QFlipProcessor::kParamPitch, rr (-12.0f, 12.0f));
+        setB (QFlipProcessor::kParamRevVerbOn, false);
+        setB (QFlipProcessor::kParamRevDlyOn, true);
+        setC (QFlipProcessor::kParamRevDlyTime, 0, 2);
+        setF (QFlipProcessor::kParamRevDlyFb, rr (0.3f, 0.6f));
+        setF (QFlipProcessor::kParamRevDlyMix, rr (0.25f, 0.5f));
+        curveEditor.setCurvePreset (3); // Stutter
+        float x = 0.0f;
+        while (x < 0.9f) { const float w = rr (0.04f, 0.12f); addZone (x, x + w, 1); x += w + rr (0.05f, 0.18f); }
+    }
+    else if (vibe == 3) // SMOOTH — tape vibes, gentle motion
+    {
+        setB (QFlipProcessor::kParamReverse, false);
+        setF (QFlipProcessor::kParamPitch, rr (-2.0f, 2.0f));
+        setB (QFlipProcessor::kParamRevVerbOn, true);
+        setC (QFlipProcessor::kParamRevVerbLen, 1, 3);
+        setF (QFlipProcessor::kParamRevVerbMix, rr (0.25f, 0.45f));
+        setB (QFlipProcessor::kParamRevDlyOn, rng.nextBool());
+        curveEditor.setCurvePreset (1); // Tape Stop
+        addZone (rr (0.1f, 0.3f), rr (0.4f, 0.6f), 3); // Dive
+    }
+    else // WILD — everything at once
+    {
+        setB (QFlipProcessor::kParamReverse, true);
+        setF (QFlipProcessor::kParamPitch, rr (-24.0f, 24.0f));
+        setB (QFlipProcessor::kParamRevVerbOn, true);
+        setC (QFlipProcessor::kParamRevVerbLen, (int) rr (0, 3.99f), 3);
+        setF (QFlipProcessor::kParamRevVerbMix, rr (0.3f, 0.8f));
+        setB (QFlipProcessor::kParamRevDlyOn, true);
+        setF (QFlipProcessor::kParamRevDlyFb, rr (0.3f, 0.7f));
+        setF (QFlipProcessor::kParamRevDlyMix, rr (0.3f, 0.6f));
+        curveEditor.setCurvePreset ((int) rr (0, 6.99f));
+        float x = 0.0f;
+        while (x < 0.85f) { const float w = rr (0.08f, 0.2f); addZone (x, x + w, (int) rr (0, 4.99f)); x += w + rr (0.03f, 0.12f); }
+    }
+
+    processor.setWarpZones (zones);
+    curveEditor.syncZonesFromProcessor();
+    syncPadsFromProcessor();
+}
+
+void QFlipEditor::syncPadsFromProcessor()
+{
+    auto getB = [this] (const char* id) -> bool
+    {
+        if (auto* v = processor.apvts.getRawParameterValue (id)) return v->load() > 0.5f;
+        return false;
+    };
+    reversePad.setToggleState (getB (QFlipProcessor::kParamReverse), juce::dontSendNotification);
+    revVerbPad.setToggleState (getB (QFlipProcessor::kParamRevVerbOn), juce::dontSendNotification);
+    revDlyPad.setToggleState (getB (QFlipProcessor::kParamRevDlyOn), juce::dontSendNotification);
+    const bool curveOn = getB (QFlipProcessor::kParamCurveOn);
+    stutterPad.setToggleState (curveOn, juce::dontSendNotification);
+    curveOnButton.setToggleState (curveOn, juce::dontSendNotification);
 }
 
 void QFlipEditor::promptSavePreset()
