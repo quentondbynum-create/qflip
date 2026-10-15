@@ -655,8 +655,11 @@ QFlipEditor::QFlipEditor (QFlipProcessor& p)
     setSize (760, 640);
     setLookAndFeel (&lookAndFeel);
 
+    // Logo loaded from BinaryData when available (CI builds may not include the asset)
+#ifdef HEADROOM_LOGO_AVAILABLE
     logoImage = juce::ImageCache::getFromMemory (BinaryData::headroomlogo_png,
                                                  BinaryData::headroomlogo_pngSize);
+#endif
 
     // ---- header: tabs + preset + dice ----
     playTab.setClickingTogglesState (true);
