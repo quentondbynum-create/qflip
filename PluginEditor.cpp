@@ -125,6 +125,7 @@ TimeCurveEditor::TimeCurveEditor (QFlipProcessor& p)
     : processor (p)
 {
     points = processor.getCurvePoints();
+    zones = processor.getWarpZones();
     startTimerHz (60); // 60fps playhead animation
 }
 
@@ -162,6 +163,26 @@ int TimeCurveEditor::findNearestPoint (juce::Point<float> px, float maxDist) con
 
 void TimeCurveEditor::mouseDown (const juce::MouseEvent& e)
 {
+    if (zonePaintMode)
+    {
+        if (e.mods.isRightButtonDown() || e.mods.isAltDown())
+        {
+            // Erase: delete the zone under the cursor
+            const int zi = findZoneAt (xToLoop (e.position.x));
+            if (zi >= 0)
+            {
+                zones.erase (zones.begin() + zi);
+                processor.setWarpZones (zones);
+                repaint();
+            }
+            return;
+        }
+        // Start painting a new zone span
+        painting = true;
+        paintStartX = xToLoop (e.position.x);
+        return;
+    }
+
     const auto px = e.position;
     dragIndex = findNearestPoint (px, 18.0f);
     if (dragIndex < 0)
@@ -179,6 +200,13 @@ void TimeCurveEditor::mouseDown (const juce::MouseEvent& e)
 
 void TimeCurveEditor::mouseDrag (const juce::MouseEvent& e)
 {
+    if (zonePaintMode)
+    {
+        if (painting)
+            repaint(); // live preview of the span being painted
+        return;
+    }
+
     if (dragIndex >= 0 && dragIndex < (int) points.size())
     {
         float x, y;
@@ -206,9 +234,72 @@ void TimeCurveEditor::mouseDrag (const juce::MouseEvent& e)
     }
 }
 
-void TimeCurveEditor::mouseUp (const juce::MouseEvent&)
+void TimeCurveEditor::mouseUp (const juce::MouseEvent& e)
 {
+    if (zonePaintMode && painting)
+    {
+        painting = false;
+        const float x2 = xToLoop (e.position.x);
+        float a = juce::jmin (paintStartX, x2);
+        float b = juce::jmax (paintStartX, x2);
+        if (b - a > 0.01f && (int) zones.size() < 16)
+        {
+            QFlipProcessor::WarpZone z;
+            z.start = a; z.end = b; z.type = paintZoneType;
+            zones.push_back (z);
+            processor.setWarpZones (zones);
+        }
+        repaint();
+        return;
+    }
     dragIndex = -1;
+}
+
+float TimeCurveEditor::xToLoop (float px) const
+{
+    auto r = getLocalBounds().toFloat().reduced (24.0f, 18.0f);
+    return juce::jlimit (0.0f, 1.0f, (px - r.getX()) / r.getWidth());
+}
+
+int TimeCurveEditor::findZoneAt (float loopX) const
+{
+    for (int i = (int) zones.size() - 1; i >= 0; --i)
+    {
+        const auto& z = zones[(size_t) i];
+        const bool inside = (z.start <= z.end)
+            ? (loopX >= z.start && loopX <= z.end)
+            : (loopX >= z.start || loopX <= z.end);
+        if (inside)
+            return i;
+    }
+    return -1;
+}
+
+void TimeCurveEditor::setZonePaintMode (bool paintZones)
+{
+    zonePaintMode = paintZones;
+    painting = false;
+    dragIndex = -1;
+    repaint();
+}
+
+void TimeCurveEditor::setPaintZoneType (int t)
+{
+    paintZoneType = juce::jlimit (0, QFlipProcessor::kNumZoneTypes - 1, t);
+    repaint();
+}
+
+void TimeCurveEditor::clearZones()
+{
+    zones.clear();
+    processor.setWarpZones (zones);
+    repaint();
+}
+
+void TimeCurveEditor::syncZonesFromProcessor()
+{
+    zones = processor.getWarpZones();
+    repaint();
 }
 
 void TimeCurveEditor::setCurvePreset (int index)
@@ -255,6 +346,50 @@ void TimeCurveEditor::paint (juce::Graphics& g)
     g.setFont (juce::Font (10.0f, juce::Font::bold));
     g.drawText ("REVERSE", r.getX(), r.getY() - 2, 70, 14, juce::Justification::left);
     g.drawText ("NOW", r.getX(), r.getBottom() - 12, 70, 14, juce::Justification::left);
+
+    // Warp zone spans (v0.4) — painted FX regions under the curve
+    {
+        const float lx = (float) processor.getLoopPhase();
+        for (const auto& z : zones)
+        {
+            const auto zc = QFlipProcessor::getZoneTypeColour (z.type);
+            const bool active = (z.start <= z.end)
+                ? (lx >= z.start && lx <= z.end)
+                : (lx >= z.start || lx <= z.end);
+            const float alpha = active ? 0.42f : 0.20f;
+            auto spanRect = [&](float a, float b)
+            {
+                const float x1 = r.getX() + a * r.getWidth();
+                const float x2 = r.getX() + b * r.getWidth();
+                g.setColour (zc.withAlpha (alpha));
+                g.fillRect (x1, r.getY(), x2 - x1, r.getHeight());
+                g.setColour (zc.withAlpha (0.8f));
+                g.drawRect (x1, r.getY(), x2 - x1, r.getHeight(), 1.0f);
+            };
+            if (z.start <= z.end)
+                spanRect (z.start, z.end);
+            else
+            {
+                spanRect (z.start, 1.0f);
+                spanRect (0.0f, z.end);
+            }
+            // Zone type tag
+            g.setColour (zc.withAlpha (0.95f));
+            g.setFont (juce::Font (9.0f, juce::Font::bold));
+            const float tagX = r.getX() + z.start * r.getWidth() + 3.0f;
+            if (tagX < r.getRight() - 50.0f)
+                g.drawText (juce::String (QFlipProcessor::getZoneTypeName (z.type)).toUpperCase(),
+                            tagX, r.getY() + 2, 60, 12, juce::Justification::left);
+        }
+        if (zonePaintMode)
+        {
+            g.setColour (QFlipProcessor::getZoneTypeColour (paintZoneType).withAlpha (0.9f));
+            g.setFont (juce::Font (10.0f, juce::Font::bold));
+            g.drawText ("PAINTING " + juce::String (QFlipProcessor::getZoneTypeName (paintZoneType)).toUpperCase()
+                        + " — DRAG TO PAINT, RIGHT-CLICK ERASES",
+                        r.getX(), r.getBottom() + 2, r.getWidth(), 14, juce::Justification::centredLeft);
+        }
+    }
 
     if (points.size() < 2)
         return;
@@ -503,9 +638,8 @@ void DiceButton::paintButton (juce::Graphics& g, bool highlighted, bool down)
 //==============================================================================
 // WaveformDisplay
 //==============================================================================
-WaveformDisplay::WaveformDisplay (QFlipProcessor& p,
-                                  std::function<void (const juce::File&)> onDrop)
-    : processor (p), onFileDrop (std::move (onDrop))
+WaveformDisplay::WaveformDisplay (QFlipProcessor& p)
+    : processor (p)
 {
     visualiser.setColours (Chrono::bg, Chrono::cyan);
     visualiser.setInterceptsMouseClicks (false, false);
@@ -558,8 +692,8 @@ void WaveformDisplay::paint (juce::Graphics& g)
         label = "CAPTURING...";
     else if (hasCapture)
         label = "DRAG OUT TO DAW";
-    else if (! hasSample)
-        label = "DROP SAMPLE HERE";
+    else
+        label = "LIVE INPUT";
 
     if (label.isNotEmpty())
     {
@@ -577,33 +711,6 @@ void WaveformDisplay::timerCallback()
         const float* chans[1] = { scopeBuf };
         visualiser.pushBuffer (chans, 1, 512);
     }
-    repaint();
-}
-
-bool WaveformDisplay::isAudioFile (const juce::File& f)
-{
-    const auto ext = f.getFileExtension().toLowerCase();
-    return ext == ".wav" || ext == ".mp3" || ext == ".aif" || ext == ".aiff"
-        || ext == ".flac" || ext == ".ogg";
-}
-
-bool WaveformDisplay::isInterestedInFileDrag (const juce::StringArray& files)
-{
-    for (auto& f : files)
-        if (isAudioFile (juce::File (f)))
-            return true;
-    return false;
-}
-
-void WaveformDisplay::filesDropped (const juce::StringArray& files, int, int)
-{
-    if (files.size() > 0 && onFileDrop)
-        onFileDrop (juce::File (files[0]));
-}
-
-void WaveformDisplay::setHasSample (bool has)
-{
-    hasSample = has;
     repaint();
 }
 
@@ -649,7 +756,7 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& e)
 //==============================================================================
 QFlipEditor::QFlipEditor (QFlipProcessor& p)
     : AudioProcessorEditor (p), processor (p),
-      waveform (p, [this] (const juce::File& f) { loadFile (f); }),
+      waveform (p),
       curveEditor (p)
 {
     setSize (760, 640);
@@ -768,6 +875,61 @@ QFlipEditor::QFlipEditor (QFlipProcessor& p)
     mixSlider.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
     addAndMakeVisible (mixSlider);
 
+    // Knob name labels UNDER the knobs (v0.4 — never on the knob itself)
+    for (auto* l : { &pitchLabel, &gainLabel, &mixLabel })
+    {
+        l->setColour (juce::Label::textColourId, Chrono::textDim);
+        l->setJustificationType (juce::Justification::centred);
+        l->setFont (juce::Font (11.0f, juce::Font::bold));
+        addAndMakeVisible (l);
+    }
+
+    // ---- Warp zone strip (v0.4) ----
+    zonePaintButton.setClickingTogglesState (true);
+    zonePaintButton.setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
+    zonePaintButton.setColour (juce::TextButton::textColourOnId, Chrono::cyan);
+    zonePaintButton.setColour (juce::TextButton::textColourOffId, Chrono::textDim);
+    zonePaintButton.onClick = [this]
+    {
+        curveEditor.setZonePaintMode (zonePaintButton.getToggleState());
+    };
+    addAndMakeVisible (zonePaintButton);
+
+    for (int i = 0; i < 5; ++i)
+    {
+        auto& sw = zoneSwatches[i];
+        sw.setButtonText (QFlipProcessor::getZoneTypeName (i));
+        sw.setClickingTogglesState (true);
+        sw.setRadioGroupId (777);
+        if (i == 0) sw.setToggleState (true, juce::dontSendNotification);
+        const auto zc = QFlipProcessor::getZoneTypeColour (i);
+        sw.setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
+        sw.setColour (juce::TextButton::buttonOnColourId, zc.withAlpha (0.35f));
+        sw.setColour (juce::TextButton::textColourOffId, Chrono::textDim);
+        sw.setColour (juce::TextButton::textColourOnId, zc);
+        sw.onClick = [this, i]
+        {
+            curveEditor.setPaintZoneType (i);
+            if (! zonePaintButton.getToggleState())
+            {
+                zonePaintButton.setToggleState (true, juce::dontSendNotification);
+                curveEditor.setZonePaintMode (true);
+            }
+        };
+        addAndMakeVisible (sw);
+    }
+
+    zoneClearButton.setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
+    zoneClearButton.setColour (juce::TextButton::textColourOffId, Chrono::textDim);
+    zoneClearButton.onClick = [this] { curveEditor.clearZones(); };
+    addAndMakeVisible (zoneClearButton);
+
+    zoneHintLabel.setColour (juce::Label::textColourId, Chrono::textDim);
+    zoneHintLabel.setJustificationType (juce::Justification::centredLeft);
+    zoneHintLabel.setFont (juce::Font (10.0f));
+    zoneHintLabel.setText ("WARP ZONES — paint FX onto the timeline", juce::dontSendNotification);
+    addAndMakeVisible (zoneHintLabel);
+
     // ---- EDIT view ----
     curveOnButton.setClickingTogglesState (true);
     curveOnButton.setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
@@ -821,6 +983,15 @@ QFlipEditor::QFlipEditor (QFlipProcessor& p)
     xoverHighSlider.setColour (juce::Slider::rotarySliderFillColourId, Chrono::amber);
     addAndMakeVisible (xoverHighSlider);
 
+    // EDIT-view knob name labels (v0.4 — under each knob)
+    for (auto* l : { &revVerbMixLabel, &revDlyFbLabel, &revDlyMixLabel, &xoverLowLabel, &xoverHighLabel })
+    {
+        l->setColour (juce::Label::textColourId, Chrono::textDim);
+        l->setJustificationType (juce::Justification::centred);
+        l->setFont (juce::Font (10.0f, juce::Font::bold));
+        addAndMakeVisible (l);
+    }
+
     for (auto* cb : { &bandLowBox, &bandMidBox, &bandHighBox })
     {
         cb->addItemList ({ "Dry", "Reverse", "Curve" }, 1);
@@ -849,15 +1020,8 @@ QFlipEditor::QFlipEditor (QFlipProcessor& p)
     tapeStartButton.onClick = [this] { processor.triggerTapeStart(); };
     addAndMakeVisible (tapeStartButton);
 
-    // Waveform / drop zone
+    // Waveform: live scope + capture (v0.4 — no sample loading)
     addAndMakeVisible (waveform);
-    sampleLabel.setColour (juce::Label::textColourId, Chrono::textDim);
-    sampleLabel.setJustificationType (juce::Justification::centredLeft);
-    addAndMakeVisible (sampleLabel);
-    browseButton.setColour (juce::TextButton::buttonColourId, Chrono::bgPanel);
-    browseButton.setColour (juce::TextButton::textColourOffId, Chrono::textBright);
-    browseButton.onClick = [this] { openFileBrowser(); };
-    addAndMakeVisible (browseButton);
 
     // ---- attachments ----
     pitchAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
@@ -900,8 +1064,6 @@ QFlipEditor::QFlipEditor (QFlipProcessor& p)
     // mix slider shows percent
     mixSlider.textFromValueFunction = [] (double v) { return juce::String ((int) (v * 100)) + "%"; };
 
-    waveform.setHasSample (processor.hasSampleLoaded());
-    updateSampleLabel();
     setView (true);
 }
 
@@ -960,11 +1122,18 @@ void QFlipEditor::resized()
     // PLAY view components
     const bool pv = showPlayView;
     curveEditor.setVisible (pv);
+    zonePaintButton.setVisible (pv);
+    for (int i = 0; i < 5; ++i) zoneSwatches[i].setVisible (pv);
+    zoneClearButton.setVisible (pv);
+    zoneHintLabel.setVisible (pv);
     for (auto* pad : { &reversePad, &tapeStopPad, &revVerbPad, &revDlyPad, &stutterPad })
         pad->setVisible (pv);
     pitchSlider.setVisible (pv);
     gainSlider.setVisible (pv);
     mixSlider.setVisible (pv);
+    pitchLabel.setVisible (pv);
+    gainLabel.setVisible (pv);
+    mixLabel.setVisible (pv);
 
     // EDIT view components
     const bool ev = ! pv;
@@ -973,11 +1142,16 @@ void QFlipEditor::resized()
     loopBarsBox.setVisible (ev);
     revVerbLenBox.setVisible (ev);
     revVerbMixSlider.setVisible (ev);
+    revVerbMixLabel.setVisible (ev);
     revDlyTimeBox.setVisible (ev);
     revDlyFbSlider.setVisible (ev);
+    revDlyFbLabel.setVisible (ev);
     revDlyMixSlider.setVisible (ev);
+    revDlyMixLabel.setVisible (ev);
     xoverLowSlider.setVisible (ev);
+    xoverLowLabel.setVisible (ev);
     xoverHighSlider.setVisible (ev);
+    xoverHighLabel.setVisible (ev);
     bandLowBox.setVisible (ev);
     bandMidBox.setVisible (ev);
     bandHighBox.setVisible (ev);
@@ -987,8 +1161,20 @@ void QFlipEditor::resized()
     if (pv)
     {
         // Hero curve
-        curveEditor.setBounds (area.removeFromTop (300));
-        area.removeFromTop (10);
+        curveEditor.setBounds (area.removeFromTop (292));
+        area.removeFromTop (6);
+
+        // Warp zone strip
+        auto zstrip = area.removeFromTop (28);
+        zonePaintButton.setBounds (zstrip.removeFromLeft (110));
+        zstrip.removeFromLeft (8);
+        zoneHintLabel.setBounds (zstrip.removeFromLeft (250));
+        zstrip.removeFromLeft (8);
+        for (int i = 0; i < 5; ++i)
+            zoneSwatches[i].setBounds (zstrip.removeFromLeft (72).reduced (2));
+        zstrip.removeFromLeft (4);
+        zoneClearButton.setBounds (zstrip.removeFromLeft (70));
+        area.removeFromTop (8);
 
         // 5 trigger pads
         auto padRow = area.removeFromTop (64);
@@ -1000,17 +1186,24 @@ void QFlipEditor::resized()
         stutterPad.setBounds (padRow.reduced (4));
         area.removeFromTop (8);
 
-        // Mini knobs + waveform
+        // Mini knobs + waveform (knob cells are 132 tall: knob + value + name label)
         auto bottom = area;
         auto knobs = bottom.removeFromLeft (300);
-        pitchSlider.setBounds (knobs.removeFromLeft (100).removeFromTop (110));
-        gainSlider.setBounds (knobs.removeFromLeft (100).removeFromTop (110));
-        mixSlider.setBounds (knobs.removeFromLeft (100).removeFromTop (110));
-        bottom.removeFromTop (4);
-        auto sampleRow = bottom.removeFromTop (22);
-        browseButton.setBounds (sampleRow.removeFromRight (120));
-        sampleRow.removeFromRight (6);
-        sampleLabel.setBounds (sampleRow);
+        {
+            auto cell = knobs.removeFromLeft (100);
+            pitchSlider.setBounds (cell.removeFromTop (112));
+            pitchLabel.setBounds (cell.removeFromTop (20));
+        }
+        {
+            auto cell = knobs.removeFromLeft (100);
+            gainSlider.setBounds (cell.removeFromTop (112));
+            gainLabel.setBounds (cell.removeFromTop (20));
+        }
+        {
+            auto cell = knobs.removeFromLeft (100);
+            mixSlider.setBounds (cell.removeFromTop (112));
+            mixLabel.setBounds (cell.removeFromTop (20));
+        }
         bottom.removeFromTop (4);
         waveform.setBounds (bottom);
     }
@@ -1026,33 +1219,53 @@ void QFlipEditor::resized()
         loopBarsBox.setBounds (row1.removeFromLeft (110));
         area.removeFromTop (10);
 
-        // Rev verb + rev delay
-        auto row2 = area.removeFromTop (110);
+        // Rev verb + rev delay (knob cells: 90 tall slider+value, 18 label)
+        auto row2 = area.removeFromTop (118);
         auto verbSec = row2.removeFromLeft (220);
         revVerbLenBox.setBounds (verbSec.removeFromTop (28));
         verbSec.removeFromTop (4);
-        revVerbMixSlider.setBounds (verbSec.removeFromLeft (100).removeFromTop (90));
+        {
+            auto cell = verbSec.removeFromLeft (100);
+            revVerbMixSlider.setBounds (cell.removeFromTop (68));
+            revVerbMixLabel.setBounds (cell.removeFromTop (18));
+        }
         row2.removeFromLeft (16);
         auto dlySec = row2.removeFromLeft (280);
         revDlyTimeBox.setBounds (dlySec.removeFromTop (28));
         dlySec.removeFromTop (4);
-        revDlyFbSlider.setBounds (dlySec.removeFromLeft (100).removeFromTop (90));
+        {
+            auto cell = dlySec.removeFromLeft (100);
+            revDlyFbSlider.setBounds (cell.removeFromTop (68));
+            revDlyFbLabel.setBounds (cell.removeFromTop (18));
+        }
         dlySec.removeFromLeft (8);
-        revDlyMixSlider.setBounds (dlySec.removeFromLeft (100).removeFromTop (90));
+        {
+            auto cell = dlySec.removeFromLeft (100);
+            revDlyMixSlider.setBounds (cell.removeFromTop (68));
+            revDlyMixLabel.setBounds (cell.removeFromTop (18));
+        }
         area.removeFromTop (10);
 
         // Multiband
-        auto row3 = area.removeFromTop (110);
+        auto row3 = area.removeFromTop (118);
         auto mbTitle = row3.removeFromTop (20);
         juce::ignoreUnused (mbTitle);
         auto mbRow = row3;
-        xoverLowSlider.setBounds (mbRow.removeFromLeft (100).removeFromTop (90));
+        {
+            auto cell = mbRow.removeFromLeft (100);
+            xoverLowSlider.setBounds (cell.removeFromTop (68));
+            xoverLowLabel.setBounds (cell.removeFromTop (18));
+        }
         mbRow.removeFromLeft (8);
         bandLowBox.setBounds (mbRow.removeFromLeft (100).removeFromTop (28));
         mbRow.removeFromLeft (16);
         bandMidBox.setBounds (mbRow.removeFromLeft (100).removeFromTop (28));
         mbRow.removeFromLeft (16);
-        xoverHighSlider.setBounds (mbRow.removeFromLeft (100).removeFromTop (90));
+        {
+            auto cell = mbRow.removeFromLeft (100);
+            xoverHighSlider.setBounds (cell.removeFromTop (68));
+            xoverHighLabel.setBounds (cell.removeFromTop (18));
+        }
         mbRow.removeFromLeft (8);
         bandHighBox.setBounds (mbRow.removeFromLeft (100).removeFromTop (28));
         area.removeFromTop (10);
@@ -1063,11 +1276,6 @@ void QFlipEditor::resized()
         row4.removeFromLeft (8);
         tapeStartButton.setBounds (row4.removeFromLeft (120));
         area.removeFromTop (8);
-        auto sampleRow = area.removeFromTop (22);
-        browseButton.setBounds (sampleRow.removeFromRight (120));
-        sampleRow.removeFromRight (6);
-        sampleLabel.setBounds (sampleRow);
-        area.removeFromTop (4);
         waveform.setBounds (area);
     }
 }
@@ -1239,6 +1447,8 @@ void QFlipEditor::applyPreset (const QFlipPreset& p)
         processor.setCurvePoints (p.curve);
         curveEditor.setCurvePreset (-1); // reload from processor
     }
+    processor.setWarpZones (p.zones);
+    curveEditor.syncZonesFromProcessor();
 }
 
 void QFlipEditor::cyclePreset (int direction)
@@ -1307,6 +1517,7 @@ QFlipPreset QFlipEditor::currentStateAsPreset (const juce::String& name)
     p.bandLow = (int) getF (QFlipProcessor::kParamBandLow);
     p.bandMid = (int) getF (QFlipProcessor::kParamBandMid);
     p.bandHigh = (int) getF (QFlipProcessor::kParamBandHigh);
+    p.zones = processor.getWarpZones();
     return p;
 }
 
@@ -1346,6 +1557,16 @@ void QFlipEditor::saveUserPreset (const juce::String& name)
         curveTree.appendChild (pt, nullptr);
     }
     tree.appendChild (curveTree, nullptr);
+    juce::ValueTree zoneTree ("Zones");
+    for (auto& z : p.zones)
+    {
+        juce::ValueTree zt ("Z");
+        zt.setProperty ("start", z.start, nullptr);
+        zt.setProperty ("end", z.end, nullptr);
+        zt.setProperty ("type", z.type, nullptr);
+        zoneTree.appendChild (zt, nullptr);
+    }
+    tree.appendChild (zoneTree, nullptr);
 
     if (auto xml = tree.createXml())
         xml->writeTo (dir.getChildFile (safe + ".qflip"));
@@ -1386,59 +1607,17 @@ QFlipPreset QFlipEditor::presetFromFile (const juce::File& f)
                 for (auto pt : ct)
                     if (pt.hasType ("Pt"))
                         p.curve.push_back ({ (float) pt.getProperty ("x"), (float) pt.getProperty ("y") });
+            if (auto zt = tree.getChildWithName ("Zones"); zt.isValid())
+                for (auto z : zt)
+                    if (z.hasType ("Z"))
+                    {
+                        QFlipProcessor::WarpZone wz;
+                        wz.start = juce::jlimit (0.0f, 1.0f, (float) z.getProperty ("start"));
+                        wz.end   = juce::jlimit (0.0f, 1.0f, (float) z.getProperty ("end"));
+                        wz.type  = juce::jlimit (0, QFlipProcessor::kNumZoneTypes - 1, (int) z.getProperty ("type"));
+                        p.zones.push_back (wz);
+                    }
         }
     }
     return p;
-}
-
-//==============================================================================
-// Drag & drop / file
-//==============================================================================
-bool QFlipEditor::isInterestedInFileDrag (const juce::StringArray& files)
-{
-    for (auto& f : files)
-    {
-        const auto ext = juce::File (f).getFileExtension().toLowerCase();
-        if (ext == ".wav" || ext == ".mp3" || ext == ".aif" || ext == ".aiff"
-            || ext == ".flac" || ext == ".ogg")
-            return true;
-    }
-    return false;
-}
-
-void QFlipEditor::filesDropped (const juce::StringArray& files, int, int)
-{
-    if (files.size() > 0)
-        loadFile (juce::File (files[0]));
-}
-
-void QFlipEditor::openFileBrowser()
-{
-    auto chooser = std::make_shared<juce::FileChooser> (
-        "Load a sample", juce::File(), "*.wav;*.mp3;*.aif;*.aiff;*.flac;*.ogg");
-    chooser->launchAsync (juce::FileBrowserComponent::openMode
-                              | juce::FileBrowserComponent::canSelectFiles,
-                          [this, chooser] (const juce::FileChooser& c)
-                          {
-                              if (c.getResults().size() > 0)
-                                  loadFile (c.getResults()[0]);
-                          });
-}
-
-void QFlipEditor::loadFile (const juce::File& file)
-{
-    if (processor.loadAudioFile (file))
-    {
-        waveform.setHasSample (true);
-        updateSampleLabel();
-    }
-}
-
-void QFlipEditor::updateSampleLabel()
-{
-    if (processor.hasSampleLoaded())
-        sampleLabel.setText ("SAMPLE: " + processor.getSampleFileName(),
-                             juce::dontSendNotification);
-    else
-        sampleLabel.setText ("no sample loaded", juce::dontSendNotification);
 }
