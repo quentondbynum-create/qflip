@@ -7,7 +7,6 @@ QFlipProcessor::QFlipProcessor()
                                        .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
-    formatManager.registerBasicFormats();
     // Default curve: Reverse preset
     setCurvePreset (0);
 }
@@ -69,7 +68,26 @@ juce::AudioProcessorValueTreeState::ParameterLayout QFlipProcessor::createParame
 void QFlipProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     currentSampleRate = sampleRate;
-    playhead = 0.0;
+
+    // Zone FX lowpass (Filter zone): prepared once, cutoff swept per sample
+    juce::dsp::ProcessSpec zoneSpec { sampleRate, (juce::uint32) juce::jmax (samplesPerBlock, 512), 1 };
+    zoneFilterL.prepare (zoneSpec); zoneFilterR.prepare (zoneSpec);
+    zoneFilterL.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
+    zoneFilterR.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
+    zoneFilterL.setCutoffFrequency (20000.0f);
+    zoneFilterR.setCutoffFrequency (20000.0f);
+    zoneFilterCutoff = 20000.0f;
+
+    // De-click smoothing coefficients (set once per prepare)
+    const float srF = (float) sampleRate;
+    zoneEdgeCoef = 1.0f - std::exp (-1.0f / (0.008f * srF));  // 8ms zone edges
+    gainCoef     = 1.0f - std::exp (-1.0f / (0.005f * srF));  // 5ms gain/mix
+    mixCoef      = gainCoef;
+    switchGain = 1.0f;
+    switchMuteSamples = 0;
+    smoothGain = apvts.getRawParameterValue (kParamGain)->load();
+    smoothMix  = apvts.getRawParameterValue (kParamMix)->load();
+    dlyGrainPhase = 0;
 
     delayNumSamples = (int) (8.0 * sampleRate);
     delayBuffer.setSize (2, delayNumSamples);
@@ -130,6 +148,9 @@ void QFlipProcessor::resetFxPointers()
     while (psOffsetB < minD) psOffsetB += psRange;
     revOffsetA = revStartSamples;
     revOffsetB = revStartSamples + (revWindowSamples - revStartSamples) * 0.5f;
+    // Zone voices start from the same sane positions
+    zRevA = revOffsetA; zRevB = revOffsetB;
+    zPsA = psOffsetA;   zPsB = psOffsetB;
 }
 
 void QFlipProcessor::releaseResources() {}
@@ -198,6 +219,98 @@ float QFlipProcessor::evaluateCurve (float x) const
     const int i1 = juce::jmin (kCurveLutSize - 1, i0 + 1);
     const float frac = pos - (float) i0;
     return curveLUT[i0] + frac * (curveLUT[i1] - curveLUT[i0]);
+}
+
+//==============================================================================
+// Warp Zones
+//==============================================================================
+const char* QFlipProcessor::getZoneTypeName (int t)
+{
+    switch (t)
+    {
+        case 0:  return "Reverse";
+        case 1:  return "Stutter";
+        case 2:  return "Filter";
+        case 3:  return "Dive";
+        case 4:  return "Freeze";
+        default: return "?";
+    }
+}
+
+juce::Colour QFlipProcessor::getZoneTypeColour (int t)
+{
+    switch (t)
+    {
+        case 0:  return juce::Colour (0xffff4fd8); // magenta — reverse
+        case 1:  return juce::Colour (0xff37e6ff); // cyan — stutter
+        case 2:  return juce::Colour (0xff9d6bff); // violet — filter
+        case 3:  return juce::Colour (0xffffb347); // amber — dive
+        case 4:  return juce::Colour (0xff8dff57); // lime — freeze
+        default: return juce::Colours::grey;
+    }
+}
+
+void QFlipProcessor::setWarpZones (const std::vector<WarpZone>& zones)
+{
+    juce::ScopedLock sl (zoneLock);
+    warpZones = zones;
+    if ((int) warpZones.size() > kMaxZones)
+        warpZones.resize (kMaxZones);
+}
+
+std::vector<QFlipProcessor::WarpZone> QFlipProcessor::getWarpZones() const
+{
+    juce::ScopedLock sl (zoneLock);
+    return warpZones;
+}
+
+int QFlipProcessor::getActiveZoneType (double lp) const
+{
+    juce::ScopedLock sl (zoneLock);
+    for (auto it = warpZones.rbegin(); it != warpZones.rend(); ++it)
+    {
+        const auto& z = *it;
+        const bool inside = (z.start <= z.end)
+            ? (lp >= z.start && lp <= z.end)
+            : (lp >= z.start || lp <= z.end); // wrapped zone
+        if (inside)
+            return z.type;
+    }
+    return -1;
+}
+
+void QFlipProcessor::syncZoneStates()
+{
+    // Snapshot zones under lock at block start; the audio thread then works
+    // on its own copies. New zones start with edgeEnv = 0 so they fade in.
+    juce::ScopedLock sl (zoneLock);
+
+    ZoneState fresh[kMaxZones];
+    int n = 0;
+    for (const auto& z : warpZones)
+    {
+        if (n >= kMaxZones)
+            break;
+        fresh[n].zone = z;
+        // Carry over runtime state for zones that already existed (match by
+        // start/end/type) so painting doesn't reset envelopes mid-play.
+        for (int i = 0; i < numZones; ++i)
+        {
+            const auto& old = zoneStates[i];
+            if (old.zone.start == z.start && old.zone.end == z.end && old.zone.type == z.type)
+            {
+                fresh[n].edgeEnv = old.edgeEnv;
+                fresh[n].holdOffset = old.holdOffset;
+                fresh[n].holdCounter = old.holdCounter;
+                fresh[n].wasActive = old.wasActive;
+                break;
+            }
+        }
+        ++n;
+    }
+    numZones = n;
+    for (int i = 0; i < n; ++i)
+        zoneStates[i] = fresh[i];
 }
 
 void QFlipProcessor::setCurvePreset (int presetIndex)
@@ -287,23 +400,6 @@ float QFlipProcessor::readDelayCubic (int channel, float offsetBehindWrite) cons
     const float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
     const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
     return ((c3 * frac + c2) * frac + c1) * frac + c0;
-}
-
-float QFlipProcessor::readSampleLinear (int channel, double position) const
-{
-    const int numSamples = sampleBuffer.getNumSamples();
-    if (numSamples == 0)
-        return 0.0f;
-
-    while (position < 0.0)               position += numSamples;
-    while (position >= numSamples)       position -= numSamples;
-
-    const int   i0   = static_cast<int> (position);
-    const int   i1   = (i0 + 1) % numSamples;
-    const float frac = static_cast<float> (position - i0);
-
-    const float* data = sampleBuffer.getReadPointer (channel);
-    return data[i0] + frac * (data[i1] - data[i0]);
 }
 
 void QFlipProcessor::copyRecentInput (float* dst, int numSamples) const
@@ -545,6 +641,22 @@ void QFlipProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         resetFxPointers();
     wasReversed = reversed;
 
+    // v0.4 de-click: any FX switch gets a 3ms dip to mask discontinuities
+    if (reversed != prevReversed || curveOn != prevCurveOn
+        || bandLowM != prevBandLowM || bandMidM != prevBandMidM || bandHighM != prevBandHighM
+        || loopBarsC != prevLoopBarsC)
+    {
+        triggerTransitionMute();
+        if (curveOn && ! prevCurveOn)
+            snapCurveOffset = true; // snap (don't glide) — the dip masks it
+    }
+    prevReversed = reversed; prevCurveOn = curveOn;
+    prevBandLowM = bandLowM; prevBandMidM = bandMidM; prevBandHighM = bandHighM;
+    prevLoopBarsC = loopBarsC;
+
+    // Snapshot warp zones for this block (lock-free from here on)
+    syncZoneStates();
+
     // Crossover setup
     lpFilterL.setCutoffFrequency (xLow);  lpFilterR.setCutoffFrequency (xLow);
     hpFilterL.setCutoffFrequency (xHigh); hpFilterR.setCutoffFrequency (xHigh);
@@ -592,13 +704,6 @@ void QFlipProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     const float revRange = revWindowSamples - revStartSamples;
     const float twoPi    = juce::MathConstants<float>::twoPi;
 
-    // Sampler (thread-safe)
-    juce::ScopedTryLock sampleTryLock (sampleLock);
-    const bool useSampler = sampleTryLock.isLocked() && sampleBuffer.getNumSamples() > 0;
-    const int sampLen = useSampler ? sampleBuffer.getNumSamples() : 0;
-    const int sampCh  = useSampler ? juce::jmax (1, sampleBuffer.getNumChannels()) : 1;
-    const double step = reversed ? -rate : rate;
-
     // Ensure scratch buffers
     if (bandLowBuf.getNumSamples() < numSamples)
     {
@@ -635,6 +740,25 @@ void QFlipProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         }
         lastPpqPos = ppqPos;
 
+        // 2b. Hoisted time-curve offset (v0.4): computed ONCE per sample and
+        // shared by all bands. Jump discontinuities trigger the dipper so
+        // stutter/scratch shapes stay punchy but click-free.
+        if (curveOn)
+        {
+            const float targetOffset = evaluateCurve ((float) loopPhase) * maxOffset;
+            if (snapCurveOffset)
+            {
+                smoothOffset = targetOffset;
+                snapCurveOffset = false;
+            }
+            else
+            {
+                if (std::abs (targetOffset - smoothOffset) > 2048.0f)
+                    triggerTransitionMute();
+                smoothOffset += (targetOffset - smoothOffset) * 0.02f;
+            }
+        }
+
         // 3. Time-FX per band (or full-band if multiband off)
         float yL, yR;
 
@@ -669,45 +793,54 @@ void QFlipProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
             yL = oL; yR = oR;
         }
 
-        // 4. Reverse reverb throw (one-shot swell)
+        // 3b. Warp Zones (v0.4): paintable FX spans on the loop timeline
+        if (numZones > 0)
+            applyWarpZones (loopPhase, xL, xR, yL, yR, pitchSt, rateF,
+                            minD, maxD, psRange, revRange, twoPi, maxOffset);
+
+        // 4. Reverse reverb throw (one-shot swell, 25ms tail fade = no click)
         {
             juce::ScopedTryLock rvl (revVerbLock);
             if (rvl.isLocked() && revVerbPos >= 0 && revVerbPos < revVerbLen && rvbOn)
             {
                 const float* rl = revVerbBuf.getReadPointer (0);
                 const float* rr = revVerbBuf.getReadPointer (1);
-                yL += rl[revVerbPos] * rvbMix * 0.9f;
-                yR += rr[revVerbPos] * rvbMix * 0.9f;
+                float tailFade = 1.0f;
+                const int fadeLen = (int) (0.025 * currentSampleRate);
+                if (revVerbPos > revVerbLen - fadeLen && fadeLen > 0)
+                    tailFade = (float) (revVerbLen - revVerbPos) / (float) fadeLen;
+                yL += rl[revVerbPos] * rvbMix * 0.9f * tailFade;
+                yR += rr[revVerbPos] * rvbMix * 0.9f * tailFade;
                 ++revVerbPos;
                 if (revVerbPos >= revVerbLen) revVerbPos = -1;
             }
         }
 
-        // 5. Reverse delay taps (taps play reversed grains)
+        // 5. Reverse delay taps (taps play reversed grains).
+        // v0.4: persistent grain phase + triangular window — no block-boundary clicks.
         if (rdlyOn)
         {
             float tapL = 0.0f, tapR = 0.0f;
             const int dw = revDlyWrite;
             const int dlyN = revDlyBuf.getNumSamples();
+            const int grainLen = juce::jmax (16, (int) (0.06 * currentSampleRate));
+            const float gpos = (float) dlyGrainPhase / (float) grainLen;
+            const float gwin = 1.0f - std::abs (2.0f * gpos - 1.0f); // triangular
+            const int gi = (int) (gpos * grainLen);
             for (int t = 0; t < kNumTaps; ++t)
             {
                 const int ts = tapSamples[t];
                 if (ts <= 0 || ts >= dlyN) continue;
-                // Read reversed: instead of tap behind, read a short grain reversed.
-                // We approximate "reverse tap" by reading the delay buffer backwards
-                // from the tap point over a 60ms grain.
-                const int grainLen = (int) (0.06 * currentSampleRate);
                 int rp = (dw - ts) % dlyN; if (rp < 0) rp += dlyN;
                 // grain reversed: newest of grain first
                 const float* dl = revDlyBuf.getReadPointer (0);
                 const float* dr = revDlyBuf.getReadPointer (1);
-                const float gpos = (float) (s % grainLen) / (float) grainLen;
-                const int gi = (int) (gpos * grainLen);
                 int idx = (rp - gi) % dlyN; if (idx < 0) idx += dlyN;
                 const float amp = 1.0f / (float) (t + 1);
-                tapL += dl[idx] * amp;
-                tapR += dr[idx] * amp;
+                tapL += dl[idx] * amp * gwin;
+                tapR += dr[idx] * amp * gwin;
             }
+            if (++dlyGrainPhase >= grainLen) dlyGrainPhase = 0;
             const float dm = rdlyMix * 0.5f;
             yL += tapL * dm;
             yR += tapR * dm;
@@ -744,26 +877,31 @@ void QFlipProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         }
         else
         {
-            tapeLag = 0.0f;
+            // v0.4: ease lag back to zero instead of snapping (no click on next stop)
+            tapeLag += (0.0f - tapeLag) * 0.01f;
+            if (std::abs (tapeLag) < 0.5f) tapeLag = 0.0f;
         }
         yL = tapeL; yR = tapeR;
 
-        // 7. Sampler voice
-        if (useSampler && sampLen > 0)
-        {
-            const float vL = readSampleLinear (0, playhead);
-            const float vR = readSampleLinear (juce::jmin (1, sampCh - 1), playhead);
-            yL += vL * 0.8f;
-            yR += vR * 0.8f;
-            playhead += step;
-            while (playhead < 0.0)                playhead += sampLen;
-            while (playhead >= (double) sampLen)  playhead -= sampLen;
-        }
+        // 8. Gain, mix (v0.4: smoothed per-sample), output
+        smoothGain += (gain - smoothGain) * gainCoef;
+        smoothMix  += (mixAmt - smoothMix) * mixCoef;
+        yL *= smoothGain; yR *= smoothGain;
+        float outL = dryL * (1.0f - smoothMix) + yL * smoothMix;
+        float outR = dryR * (1.0f - smoothMix) + yR * smoothMix;
 
-        // 8. Gain, mix, output
-        yL *= gain; yR *= gain;
-        float outL = dryL * (1.0f - mixAmt) + yL * mixAmt;
-        float outR = dryR * (1.0f - mixAmt) + yR * mixAmt;
+        // 8b. Transition dipper (v0.4): masks FX-switch discontinuities
+        if (switchMuteSamples > 0)
+        {
+            --switchMuteSamples;
+            const float phase = 1.0f - (float) switchMuteSamples / (float) switchMuteTotal;
+            switchGain = 1.0f - std::pow (std::sin (juce::MathConstants<float>::pi * phase), 2.0f);
+        }
+        else
+        {
+            switchGain = 1.0f;
+        }
+        outL *= switchGain; outR *= switchGain;
 
         // 9. Capture (post-FX, pre-output-write but after mix)
         if (capturing.load())
@@ -787,12 +925,169 @@ void QFlipProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     }
 }
 
-// Per-sample band FX: mode 0=Dry, 1=Reverse, 2=Curve, 3=Pitch-only
+// Reverse voice: advances the given dual-pointer state once per call and
+// returns the crossfaded backward-sweep output.
+void QFlipProcessor::reverseVoice (float& outL, float& outR, float& offA, float& offB,
+                                   float rateF, float revRange, float twoPi)
+{
+    offA += rateF;
+    offB += rateF;
+    if (offA > revWindowSamples) offA -= revRange;
+    if (offB > revWindowSamples) offB -= revRange;
+
+    const float phA = (offA - revStartSamples) / revRange;
+    const float phB = (offB - revStartSamples) / revRange;
+    const float fA = 0.5f - 0.5f * std::cos (phA * twoPi);
+    const float fB = 0.5f - 0.5f * std::cos (phB * twoPi);
+    const float inv = 1.0f / (fA + fB + 1e-6f);
+
+    outL = (readDelayLinear (0, offA) * fA + readDelayLinear (0, offB) * fB) * inv;
+    outR = (readDelayLinear (1, offA) * fA + readDelayLinear (1, offB) * fB) * inv;
+}
+
+// Pitch voice: dual-pointer pitch shifter at the given rate.
+void QFlipProcessor::pitchVoice (float inL, float inR, float& outL, float& outR,
+                                 float& offA, float& offB, float rate,
+                                 float minD, float maxD, float psRange)
+{
+    const float twoPi = juce::MathConstants<float>::twoPi;
+    offA += (1.0f - rate);
+    offB += (1.0f - rate);
+    if (offA < minD)      offA += psRange;
+    else if (offA > maxD) offA -= psRange;
+    if (offB < minD)      offB += psRange;
+    else if (offB > maxD) offB -= psRange;
+
+    const float phA = (offA - minD) / psRange;
+    const float phB = (offB - minD) / psRange;
+    const float fA = 0.5f - 0.5f * std::cos (phA * twoPi);
+    const float fB = 0.5f - 0.5f * std::cos (phB * twoPi);
+    const float inv = 1.0f / (fA + fB + 1e-6f);
+
+    outL = (readDelayLinear (0, offA) * fA + readDelayLinear (0, offB) * fB) * inv;
+    outR = (readDelayLinear (1, offA) * fA + readDelayLinear (1, offB) * fB) * inv;
+}
+
+void QFlipProcessor::triggerTransitionMute()
+{
+    switchMuteTotal = juce::jmax (16, (int) (0.003 * currentSampleRate));
+    switchMuteSamples = switchMuteTotal;
+}
+
+// Warp Zones: paintable FX spans. Each active zone blends its FX into y with
+// an 8ms smoothed edge envelope. Zones use their own voice state so they
+// never fight the base FX voices.
+void QFlipProcessor::applyWarpZones (double lp, float inL, float inR, float& yL, float& yR,
+                                     float pitchSt, float rateF, float minD, float maxD,
+                                     float psRange, float revRange, float twoPi, float maxOffset)
+{
+    juce::ignoreUnused (inL, inR, maxOffset, twoPi);
+
+    for (int i = 0; i < numZones; ++i)
+    {
+        ZoneState& zs = zoneStates[i];
+        const WarpZone& z = zs.zone;
+        const bool inside = (z.start <= z.end)
+            ? (lp >= z.start && lp <= z.end)
+            : (lp >= z.start || lp <= z.end); // wrapped zone
+
+        const float target = inside ? 1.0f : 0.0f;
+        zs.edgeEnv += (target - zs.edgeEnv) * zoneEdgeCoef;
+        if (zs.edgeEnv < 0.001f)
+        {
+            zs.wasActive = false;
+            continue;
+        }
+
+        float zL = yL, zR = yR;
+        switch (z.type)
+        {
+            case 0: // Reverse
+                reverseVoice (zL, zR, zRevA, zRevB, rateF, revRange, twoPi);
+                break;
+
+            case 1: // Stutter — re-hold a tiny slice every ~90ms
+            case 4: // Freeze — hold one slice for the whole zone
+            {
+                const int retrig = (z.type == 1) ? juce::jmax (64, (int) (0.09 * currentSampleRate))
+                                                 : std::numeric_limits<int>::max();
+                if (! zs.wasActive)
+                {
+                    zs.holdOffset = smoothOffset;
+                    zs.holdCounter = 0;
+                }
+                else if (++zs.holdCounter >= retrig)
+                {
+                    zs.holdOffset = smoothOffset;
+                    zs.holdCounter = 0;
+                }
+                const float off = juce::jlimit (0.0f, (float) delayNumSamples * 0.95f, zs.holdOffset);
+                zL = readDelayCubic (0, off);
+                zR = readDelayCubic (1, off);
+                break;
+            }
+
+            case 2: // Filter — lowpass sweep 20k -> 300 across the zone
+            {
+                float zp = 0.0f;
+                if (z.end > z.start)
+                    zp = (float) ((lp - z.start) / (z.end - z.start));
+                else
+                {
+                    const float span = (1.0f - z.start) + z.end;
+                    const float pos = (lp >= z.start) ? (lp - z.start) : ((1.0f - z.start) + lp);
+                    zp = span > 0.0f ? pos / span : 0.0f;
+                }
+                zp = juce::jlimit (0.0f, 1.0f, zp);
+                const float cutoffTarget = 20000.0f * std::pow (300.0f / 20000.0f, zp);
+                zoneFilterCutoff += (cutoffTarget - zoneFilterCutoff) * 0.05f;
+                zoneFilterL.setCutoffFrequency (zoneFilterCutoff);
+                zoneFilterR.setCutoffFrequency (zoneFilterCutoff);
+                zL = zoneFilterL.processSample (0, yL);
+                zR = zoneFilterR.processSample (1, yR);
+                break;
+            }
+
+            case 3: // Dive — pitch dives as the zone progresses (rate 1 -> 0.25)
+            {
+                float zp = 0.0f;
+                if (z.end > z.start)
+                    zp = (float) ((lp - z.start) / (z.end - z.start));
+                else
+                {
+                    const float span = (1.0f - z.start) + z.end;
+                    const float pos = (lp >= z.start) ? (lp - z.start) : ((1.0f - z.start) + lp);
+                    zp = span > 0.0f ? pos / span : 0.0f;
+                }
+                zp = juce::jlimit (0.0f, 1.0f, zp);
+                const float diveRate = rateF * (1.0f - 0.75f * zp);
+                const bool pActive = std::abs (pitchSt) > 0.001f || zp > 0.0f;
+                if (pActive)
+                    pitchVoice (yL, yR, zL, zR, zPsA, zPsB, diveRate, minD, maxD, psRange);
+                break;
+            }
+
+            default:
+                break;
+        }
+
+        const float e = juce::jmin (1.0f, zs.edgeEnv);
+        yL = yL * (1.0f - e) + zL * e;
+        yR = yR * (1.0f - e) + zR * e;
+        zs.wasActive = inside;
+    }
+}
+
+// Per-sample band FX: mode 0=Dry, 1=Reverse, 2=Curve, 3=Pitch-only.
+// NOTE: curve offset is hoisted to processBlock (smoothOffset); the shared
+// voice pointers belong to the base FX only — zones use their own.
 void QFlipProcessor::processBandSample (float inL, float inR, float& outL, float& outR,
                                         int mode, float pitchSt, float rateF, bool reversed, bool curveOn,
                                         float minD, float maxD, float psRange, float revRange,
                                         float twoPi, float maxOffset)
 {
+    juce::ignoreUnused (reversed, maxOffset);
+
     if (mode == 0)
     {
         outL = inL; outR = inR;
@@ -801,10 +1096,7 @@ void QFlipProcessor::processBandSample (float inL, float inR, float& outL, float
 
     if (mode == 2 && curveOn)
     {
-        // TimeCurve: curve y -> read offset, cubic interpolation, smoothed
-        const float targetOffset = evaluateCurve ((float) loopPhase) * maxOffset;
-        // Smooth inside per-sample: use a fast one-pole (coeff ~0.02)
-        smoothOffset += (targetOffset - smoothOffset) * 0.02f;
+        // TimeCurve: hoisted smoothOffset -> read offset, cubic interpolation
         const float off = juce::jlimit (0.0f, (float) delayNumSamples * 0.95f, smoothOffset);
         outL = readDelayCubic (0, off);
         outR = readDelayCubic (1, off);
@@ -813,120 +1105,17 @@ void QFlipProcessor::processBandSample (float inL, float inR, float& outL, float
 
     if (mode == 1)
     {
-        // Reverse engine (dual-pointer backward sweep)
-        revOffsetA += rateF;
-        revOffsetB += rateF;
-        if (revOffsetA > revWindowSamples) revOffsetA -= revRange;
-        if (revOffsetB > revWindowSamples) revOffsetB -= revRange;
-
-        const float phA = (revOffsetA - revStartSamples) / revRange;
-        const float phB = (revOffsetB - revStartSamples) / revRange;
-        const float fA = 0.5f - 0.5f * std::cos (phA * twoPi);
-        const float fB = 0.5f - 0.5f * std::cos (phB * twoPi);
-        const float inv = 1.0f / (fA + fB + 1e-6f);
-
-        outL = (readDelayLinear (0, revOffsetA) * fA + readDelayLinear (0, revOffsetB) * fB) * inv;
-        outR = (readDelayLinear (1, revOffsetA) * fA + readDelayLinear (1, revOffsetB) * fB) * inv;
+        reverseVoice (outL, outR, revOffsetA, revOffsetB, rateF, revRange, twoPi);
         return;
     }
 
     // mode 3 (or fallback): pitch shifter, or dry if no pitch
-    const bool pitchActive = std::abs (pitchSt) > 0.001f;
-    if (pitchActive)
-    {
-        psOffsetA += (1.0f - rateF);
-        psOffsetB += (1.0f - rateF);
-        if (psOffsetA < minD)      psOffsetA += psRange;
-        else if (psOffsetA > maxD) psOffsetA -= psRange;
-        if (psOffsetB < minD)      psOffsetB += psRange;
-        else if (psOffsetB > maxD) psOffsetB -= psRange;
-
-        const float phA = (psOffsetA - minD) / psRange;
-        const float phB = (psOffsetB - minD) / psRange;
-        const float fA = 0.5f - 0.5f * std::cos (phA * twoPi);
-        const float fB = 0.5f - 0.5f * std::cos (phB * twoPi);
-        const float inv = 1.0f / (fA + fB + 1e-6f);
-
-        outL = (readDelayLinear (0, psOffsetA) * fA + readDelayLinear (0, psOffsetB) * fB) * inv;
-        outR = (readDelayLinear (1, psOffsetA) * fA + readDelayLinear (1, psOffsetB) * fB) * inv;
-    }
+    if (std::abs (pitchSt) > 0.001f)
+        pitchVoice (inL, inR, outL, outR, psOffsetA, psOffsetB, rateF, minD, maxD, psRange);
     else
     {
         outL = inL; outR = inR;
     }
-}
-
-//==============================================================================
-// Sample engine
-//==============================================================================
-bool QFlipProcessor::loadAudioFile (const juce::File& file)
-{
-    std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
-
-    if (reader == nullptr)
-        return false;
-
-    juce::AudioBuffer<float> newBuffer (
-        static_cast<int> (reader->numChannels),
-        static_cast<int> (reader->lengthInSamples));
-
-    reader->read (&newBuffer, 0, static_cast<int> (reader->lengthInSamples), 0, true, true);
-
-    {
-        juce::ScopedLock sl (sampleLock);
-        sampleBuffer = std::move (newBuffer);
-        sampleFileName = file.getFileName();
-        playhead = 0.0;
-    }
-    return true;
-}
-
-bool QFlipProcessor::hasSampleLoaded() const
-{
-    juce::ScopedLock sl (sampleLock);
-    return sampleBuffer.getNumSamples() > 0;
-}
-
-juce::AudioBuffer<float>& QFlipProcessor::getSampleBuffer()
-{
-    return sampleBuffer;
-}
-
-juce::String QFlipProcessor::getSampleFileName() const
-{
-    return sampleFileName;
-}
-
-std::unique_ptr<juce::AudioBuffer<float>> QFlipProcessor::renderProcessed()
-{
-    juce::ScopedLock sl (sampleLock);
-    if (sampleBuffer.getNumSamples() == 0)
-        return nullptr;
-
-    const float pitchSt  = apvts.getRawParameterValue (kParamPitch)->load();
-    const bool  reversed = apvts.getRawParameterValue (kParamReverse)->load() > 0.5f;
-    const float gain     = apvts.getRawParameterValue (kParamGain)->load();
-    const double ratio   = std::pow (2.0, pitchSt / 12.0);
-
-    const int numSamples = sampleBuffer.getNumSamples();
-    const int outLength  = juce::jmax (1, static_cast<int> (numSamples / ratio));
-
-    auto out = std::make_unique<juce::AudioBuffer<float>> (2, outLength);
-
-    for (int i = 0; i < outLength; ++i)
-    {
-        const double srcPos = reversed
-            ? (numSamples - 1 - i * ratio)
-            : (i * ratio);
-
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            const int srcCh = juce::jmin (ch, sampleBuffer.getNumChannels() - 1);
-            out->setSample (ch, i, readSampleLinear (srcCh, srcPos) * gain);
-        }
-    }
-
-    return out;
 }
 
 //==============================================================================
@@ -966,6 +1155,19 @@ void QFlipProcessor::getStateInformation (juce::MemoryBlock& destData)
         full.appendChild (state, nullptr);
         full.appendChild (curveTree, nullptr);
 
+        // Persist warp zones (v0.4)
+        auto zones = getWarpZones();
+        juce::ValueTree zoneTree ("WarpZones");
+        for (auto& z : zones)
+        {
+            juce::ValueTree zt ("Z");
+            zt.setProperty ("start", z.start, nullptr);
+            zt.setProperty ("end", z.end, nullptr);
+            zt.setProperty ("type", z.type, nullptr);
+            zoneTree.appendChild (zt, nullptr);
+        }
+        full.appendChild (zoneTree, nullptr);
+
         std::unique_ptr<juce::XmlElement> xml (full.createXml());
         if (xml) copyXmlToBinary (*xml, destData);
     }
@@ -990,6 +1192,22 @@ void QFlipProcessor::setStateInformation (const void* data, int sizeInBytes)
                 }
                 if (pts.size() >= 2)
                     setCurvePoints (pts);
+            }
+            if (auto zoneTree = full.getChildWithName ("WarpZones"); zoneTree.isValid())
+            {
+                std::vector<WarpZone> zones;
+                for (auto zt : zoneTree)
+                {
+                    if (zt.hasType ("Z"))
+                    {
+                        WarpZone z;
+                        z.start = juce::jlimit (0.0f, 1.0f, (float) zt.getProperty ("start"));
+                        z.end   = juce::jlimit (0.0f, 1.0f, (float) zt.getProperty ("end"));
+                        z.type  = juce::jlimit (0, kNumZoneTypes - 1, (int) zt.getProperty ("type"));
+                        zones.push_back (z);
+                    }
+                }
+                setWarpZones (zones);
             }
         }
         else if (xml->hasTagName (apvts.state.getType()))
