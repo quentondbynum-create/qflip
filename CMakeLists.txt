@@ -27,14 +27,15 @@ juce_add_plugin(QFlip
     IS_SYNTH FALSE
 )
 
+# Headroom Audio logo, embedded as binary data. 384px: crisp in the header,
+# small enough to push through the API.
+juce_add_binary_data(QFlipAssets SOURCES Assets/headroom-logo.png)
+target_compile_definitions(QFlip PRIVATE HEADROOM_LOGO_AVAILABLE=1)
+
 target_sources(QFlip PRIVATE
     PluginProcessor.cpp
     PluginEditor.cpp
 )
-
-# Logo asset: uncomment when Assets/headroom-logo.png is in the repo
-# juce_add_binary_data(QFlipAssets SOURCES Assets/headroom-logo.png)
-# target_compile_definitions(QFlip PRIVATE HEADROOM_LOGO_AVAILABLE=1)
 
 target_compile_definitions(QFlip PRIVATE
     JUCE_WEB_BROWSER=0
@@ -43,6 +44,7 @@ target_compile_definitions(QFlip PRIVATE
 )
 
 target_link_libraries(QFlip PRIVATE
+    QFlipAssets
     juce::juce_audio_utils
     juce::juce_audio_processors
     juce::juce_audio_formats
