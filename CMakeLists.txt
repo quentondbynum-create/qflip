@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(QFlip VERSION 0.1.0)
+project(QFlip VERSION 0.3.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,6 +27,8 @@ juce_add_plugin(QFlip
     IS_SYNTH FALSE
 )
 
+juce_add_binary_data(QFlipAssets SOURCES Assets/headroom-logo.png)
+
 target_sources(QFlip PRIVATE
     PluginProcessor.cpp
     PluginEditor.cpp
@@ -39,6 +41,7 @@ target_compile_definitions(QFlip PRIVATE
 )
 
 target_link_libraries(QFlip PRIVATE
+    QFlipAssets
     juce::juce_audio_utils
     juce::juce_audio_processors
     juce::juce_audio_formats

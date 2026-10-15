@@ -6,38 +6,113 @@
 #include "PluginProcessor.h"
 
 //==============================================================================
-// Bold, colorful look for QFlip v0.2 — neon on vibrant gradient.
-class QFlipLookAndFeel : public juce::LookAndFeel_V4
+// CHRONO visual identity — time-warp aesthetic
+namespace Chrono
+{
+    const juce::Colour bg        (0xff0a0a12); // deep near-black
+    const juce::Colour bgPanel   (0xff12121c);
+    const juce::Colour cyan      (0xff00f0ff); // primary accent
+    const juce::Colour violet    (0xff8b2ff7);
+    const juce::Colour magenta   (0xffff2e88); // reverse sections
+    const juce::Colour amber     (0xffffb020); // warnings/record
+    const juce::Colour textDim   (0xff8a8a9a);
+    const juce::Colour textBright(0xfff2f2f7);
+    const juce::Colour gridLine  (0xff1e1e2a);
+}
+
+//==============================================================================
+class ChronoLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
     void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h,
                            float sliderPos, float rotaryStartAngle, float rotaryEndAngle,
                            juce::Slider&) override;
-
     void drawComboBox (juce::Graphics&, int width, int height, bool isButtonDown,
                        int buttonX, int buttonY, int buttonW, int buttonH,
                        juce::ComboBox&) override;
     juce::Font getComboBoxFont (juce::ComboBox&) override;
-
     void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour& backgroundColour,
                                bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
     void drawButtonText (juce::Graphics&, juce::TextButton&, bool, bool) override;
     juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
-
     void drawLabel (juce::Graphics&, juce::Label&) override;
     juce::Font getLabelFont (juce::Label&) override;
-
-    void drawPopupMenuBackground (juce::Graphics&, int width, int height) override;
-    void drawPopupMenuItem (juce::Graphics&, const juce::Rectangle<int>& area,
-                            bool isSeparator, bool isActive, bool isHighlighted, bool isTicked,
-                            bool hasSubMenu, const juce::String& text, const juce::String& shortcut,
-                            const juce::Drawable* icon, const juce::Colour* textColour) override;
 };
 
 //==============================================================================
-// Live input visualiser + sample drop zone.
-// Implements FileDragAndDropTarget itself so drops land even though this
-// component covers the editor background (the v0.1 drop bug).
+// TimeCurveEditor — the HERO. Drawable time-warp curve with animated playhead.
+class TimeCurveEditor : public juce::Component,
+                        private juce::Timer
+{
+public:
+    explicit TimeCurveEditor (QFlipProcessor& p);
+    ~TimeCurveEditor() override;
+
+    void paint (juce::Graphics& g) override;
+    void resized() override;
+
+    void mouseDown (const juce::MouseEvent& e) override;
+    void mouseDrag (const juce::MouseEvent& e) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+    void setCurvePreset (int index); // redraw from processor preset
+    std::function<void()> onCurveChanged;
+
+private:
+    void timerCallback() override;
+    juce::Point<float> pointToPixel (float x, float y) const;
+    void pixelToPoint (juce::Point<float> px, float& x, float& y) const;
+    int findNearestPoint (juce::Point<float> px, float maxDist) const;
+
+    QFlipProcessor& processor;
+    std::vector<QFlipProcessor::CurvePoint> points;
+    int dragIndex = -1;
+    float pulsePhase = 0.0f; // for the glow pulse animation
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TimeCurveEditor)
+};
+
+//==============================================================================
+// TriggerPad — animated pad with ripple on engage (Baby Audio playfulness)
+class TriggerPad : public juce::TextButton,
+                   private juce::Timer
+{
+public:
+    TriggerPad (const juce::String& name, juce::Colour accent);
+    void paintButton (juce::Graphics& g, bool highlighted, bool down) override;
+    void clicked() override;
+
+private:
+    void timerCallback() override;
+    juce::Colour accentColour;
+    float ripple = 0.0f; // 0..1 ripple animation
+    float glowPulse = 0.0f;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TriggerPad)
+};
+
+//==============================================================================
+// DiceButton — big random with satisfying animation
+class DiceButton : public juce::TextButton,
+                   private juce::Timer
+{
+public:
+    DiceButton();
+    void paintButton (juce::Graphics& g, bool highlighted, bool down) override;
+    void clicked() override;
+    std::function<void()> onDice;
+
+private:
+    void timerCallback() override;
+    float spinPhase = 0.0f;
+    bool spinning = false;
+    int spinFrames = 0;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DiceButton)
+};
+
+//==============================================================================
+// WaveformDisplay — drop zone + capture waveform + drag-out source
 class WaveformDisplay : public juce::Component,
                         public juce::FileDragAndDropTarget,
                         private juce::Timer
@@ -47,13 +122,15 @@ public:
     ~WaveformDisplay() override;
 
     void paint (juce::Graphics& g) override;
-    void paintOverChildren (juce::Graphics& g) override;
     void resized() override;
+    void mouseDown (const juce::MouseEvent& e) override;
+    void mouseDrag (const juce::MouseEvent& e) override;
 
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void filesDropped (const juce::StringArray& files, int x, int y) override;
 
     void setHasSample (bool has);
+    void setCaptureMode (bool capturing, bool hasCapture);
 
 private:
     void timerCallback() override;
@@ -62,8 +139,12 @@ private:
     QFlipProcessor& processor;
     std::function<void (const juce::File&)> onFileDrop;
     juce::AudioVisualiserComponent visualiser { 1 };
+    juce::DragAndDropContainer* dragContainer = nullptr;
     bool hasSample = false;
+    bool captureMode = false;
+    bool hasCapture = false;
     float scopeBuf[512];
+    juce::AudioBuffer<float> captureView; // for drawing
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveformDisplay)
 };
@@ -72,15 +153,31 @@ private:
 struct QFlipPreset
 {
     juce::String name;
-    float pitch = 0.0f;   // semitones
+    // Full state: params + curve
+    float pitch = 0.0f;
     bool reverse = false;
     float gain = 1.0f;
+    float mix = 1.0f;
+    bool curveOn = false;
+    int loopBars = 1;
+    std::vector<QFlipProcessor::CurvePoint> curve;
+    bool revVerbOn = false;
+    int revVerbLen = 2;
+    float revVerbMix = 0.5f;
+    bool revDlyOn = false;
+    int revDlyTime = 1;
+    float revDlyFb = 0.35f;
+    float revDlyMix = 0.3f;
+    float xoverLow = 250.0f;
+    float xoverHigh = 4000.0f;
+    int bandLow = 0, bandMid = 0, bandHigh = 0;
     bool isFactory = true;
 };
 
 //==============================================================================
 class QFlipEditor : public juce::AudioProcessorEditor,
-                    public juce::FileDragAndDropTarget
+                    public juce::FileDragAndDropTarget,
+                    public juce::DragAndDropContainer
 {
 public:
     explicit QFlipEditor (QFlipProcessor&);
@@ -92,6 +189,8 @@ public:
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void filesDropped (const juce::StringArray& files, int x, int y) override;
 
+    static std::vector<QFlipPreset> buildFactoryPresets();
+
 private:
     void loadFile (const juce::File& file);
     void openFileBrowser();
@@ -101,31 +200,79 @@ private:
     void refreshPresetCombo();
     void applyPreset (const QFlipPreset& p);
     void cyclePreset (int direction);
+    void randomizePreset();
     void promptSavePreset();
     void saveUserPreset (const juce::String& name);
     QFlipPreset presetFromFile (const juce::File& f);
+    QFlipPreset currentStateAsPreset (const juce::String& name);
     static juce::File getPresetDir();
 
+    void setView (bool playView); // true=PLAY, false=EDIT
+
     QFlipProcessor& processor;
-    QFlipLookAndFeel lookAndFeel;
+    ChronoLookAndFeel lookAndFeel;
+    juce::Image logoImage;
 
-    WaveformDisplay waveform;
+    bool showPlayView = true;
 
+    // Header
+    juce::TextButton playTab { "PLAY" };
+    juce::TextButton editTab { "EDIT" };
     juce::ComboBox presetBox;
+    DiceButton diceButton;
     juce::TextButton prevPresetButton { "<" };
     juce::TextButton nextPresetButton { ">" };
     juce::TextButton savePresetButton { "SAVE" };
-    juce::TextButton browseButton { "LOAD SAMPLE" };
 
-    juce::Label sampleLabel;
-
+    // PLAY view
+    TimeCurveEditor curveEditor;
+    TriggerPad reversePad { "REVERSE", Chrono::magenta };
+    TriggerPad tapeStopPad { "TAPE STOP", Chrono::amber };
+    TriggerPad revVerbPad { "REV VERB", Chrono::violet };
+    TriggerPad revDlyPad { "REV DELAY", Chrono::cyan };
+    TriggerPad stutterPad { "STUTTER", Chrono::cyan };
     juce::Slider pitchSlider;
     juce::Slider gainSlider;
-    juce::TextButton reverseButton { "REVERSE" };
+    juce::Slider mixSlider;
 
+    // EDIT view
+    juce::ComboBox loopBarsBox;
+    juce::TextButton curvePresetButtons[7];
+    juce::ComboBox revVerbLenBox;
+    juce::Slider revVerbMixSlider;
+    juce::ComboBox revDlyTimeBox;
+    juce::Slider revDlyFbSlider;
+    juce::Slider revDlyMixSlider;
+    juce::Slider xoverLowSlider;
+    juce::Slider xoverHighSlider;
+    juce::ComboBox bandLowBox, bandMidBox, bandHighBox;
+    juce::TextButton captureButton { "CAPTURE" };
+    juce::TextButton tapeStartButton { "TAPE START" };
+
+    WaveformDisplay waveform;
+    juce::Label sampleLabel;
+    juce::TextButton browseButton { "LOAD SAMPLE" };
+
+    // Attachments
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> pitchAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> gainAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> mixAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> reverseAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> curveOnAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> loopBarsAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> revVerbOnAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> revVerbLenAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> revVerbMixAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> revDlyOnAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> revDlyTimeAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> revDlyFbAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> revDlyMixAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> xoverLowAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> xoverHighAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> bandLowAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> bandMidAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> bandHighAttachment;
+    juce::TextButton curveOnButton { "CURVE" };
 
     juce::Array<QFlipPreset> presets;
 
