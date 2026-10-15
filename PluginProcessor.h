@@ -53,11 +53,7 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     // ---- Sample engine (drag-in looper) ----
-    bool loadAudioFile (const juce::File& file);
-    bool hasSampleLoaded() const;
-    juce::AudioBuffer<float>& getSampleBuffer();
-    juce::String getSampleFileName() const;
-    std::unique_ptr<juce::AudioBuffer<float>> renderProcessed();
+    // Live input scope (the waveform shows the live input / capture; no sample loading in v0.4)
     void copyRecentInput (float* dst, int numSamples) const;
 
     // ---- TimeCurve ----
@@ -68,11 +64,28 @@ public:
     void setCurvePreset (int presetIndex); // 0=Reverse,1=TapeStop,2=TapeStart,3=Stutter,4=Scratch,5=Half,6=Double
     double getLoopPhase() const { return loopPhase; } // for UI playhead
 
+    // ---- Warp Zones (ShaperBox-style paintable FX zones, v0.4) ----
+    // Painted spans on the loop timeline. While the loop playhead is inside
+    // a zone, the zone's FX blends in with smoothed edges (no clicks).
+    struct WarpZone
+    {
+        float start = 0.0f; // 0..1 loop position
+        float end = 0.0f;   // 0..1
+        int type = 0;       // 0=Reverse, 1=Stutter, 2=Filter, 3=Dive, 4=Freeze
+    };
+    static constexpr int kNumZoneTypes = 5;
+    static const char* getZoneTypeName (int t);
+    static juce::Colour getZoneTypeColour (int t);
+    void setWarpZones (const std::vector<WarpZone>& zones);
+    std::vector<WarpZone> getWarpZones() const;
+    int getActiveZoneType (double loopPhase) const; // for UI highlight, -1 = none
+
     // ---- One-shot triggers (call from UI) ----
     void triggerReverseReverb();
     void triggerTapeStop();
     void triggerTapeStart();
 
+    // Warp zone storage (private runtime in the impl section below)
     // ---- Capture ----
     void startCapture();
     void stopCapture();
@@ -108,13 +121,55 @@ private:
     // Delay line reads
     float readDelayLinear (int channel, float offsetBehindWrite) const;
     float readDelayCubic (int channel, float offsetBehindWrite) const;
-    float readSampleLinear (int channel, double position) const;
     void resetFxPointers();
 
     void processBandSample (float inL, float inR, float& outL, float& outR,
                             int mode, float pitchSt, float rateF, bool reversed, bool curveOn,
                             float minD, float maxD, float psRange, float revRange,
                             float twoPi, float maxOffset);
+
+    // Warp zone engine helpers
+    float zoneEdgeCoef = 0.0f; // per-sample edge smoothing coefficient
+    static constexpr int kMaxZones = 16;
+    struct ZoneState
+    {
+        WarpZone zone;
+        float edgeEnv = 0.0f;   // smoothed 0..1
+        float holdOffset = 0.0f; // for Stutter/Freeze
+        int holdCounter = 0;
+        bool wasActive = false;
+    };
+    ZoneState zoneStates[kMaxZones];
+    int numZones = 0;
+    std::vector<WarpZone> warpZones;
+    mutable juce::CriticalSection zoneLock;
+    void syncZoneStates(); // copy zones under lock -> snapshot (call at block start)
+    // Voice helpers. offA/offB are the caller's dual-pointer state (shared or
+    // zone-dedicated); each helper advances them exactly once per call.
+    void reverseVoice (float& outL, float& outR, float& offA, float& offB,
+                       float rateF, float revRange, float twoPi);
+    void pitchVoice (float inL, float inR, float& outL, float& outR,
+                     float& offA, float& offB, float rate,
+                     float minD, float maxD, float psRange);
+    void applyWarpZones (double lp, float inL, float inR, float& yL, float& yR,
+                         float pitchSt, float rateF, float minD, float maxD,
+                         float psRange, float revRange, float twoPi, float maxOffset);
+    juce::dsp::StateVariableTPTFilter<float> zoneFilterL, zoneFilterR;
+    float zoneFilterCutoff = 20000.0f;
+
+    // De-click: transition dipper
+    float switchGain = 1.0f;
+    int switchMuteSamples = 0;
+    int switchMuteTotal = 1;
+    void triggerTransitionMute();
+    float smoothGain = 1.0f, smoothMix = 1.0f;
+    float gainCoef = 0.0f, mixCoef = 0.0f;
+    // Previous block's switch states (for change detection)
+    bool prevCurveOn = false, prevReversed = false;
+    int prevBandLowM = 0, prevBandMidM = 0, prevBandHighM = 0, prevLoopBarsC = 1;
+    bool snapCurveOffset = false;
+    // Zone-dedicated voice pointers (independent from the base FX voices)
+    float zRevA = 0.0f, zRevB = 0.0f, zPsA = 0.0f, zPsB = 0.0f;
 
     // Simple Schroeder reverb for the reverse throw
     struct SimpleReverb
@@ -129,12 +184,6 @@ private:
         std::vector<int> apIdx;
     };
     SimpleReverb verb;
-
-    juce::AudioFormatManager formatManager;
-    juce::AudioBuffer<float> sampleBuffer;
-    juce::String sampleFileName;
-    double playhead = 0.0;
-    mutable juce::CriticalSection sampleLock;
 
     // Main delay line: 2ch x 8s (room for time curve + reverb capture)
     juce::AudioBuffer<float> delayBuffer;
@@ -173,6 +222,7 @@ private:
     juce::AudioBuffer<float> revDlyBuf; // 2s
     int revDlyWrite = 0;
     static constexpr int kNumTaps = 4;
+    int dlyGrainPhase = 0; // persistent grain phase (v0.4: no block-boundary clicks)
 
     // Multiband crossover (LR4)
     juce::dsp::LinkwitzRileyFilter<float> lpFilterL, lpFilterR;
