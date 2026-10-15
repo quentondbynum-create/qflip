@@ -6,22 +6,30 @@
 #include "PluginProcessor.h"
 
 //==============================================================================
-// CHRONO visual identity — time-warp aesthetic
-namespace Chrono
+// HARDWARE visual identity — pro outboard unit (TONEFLX/ShaperBox bar)
+namespace Hardware
 {
-    const juce::Colour bg        (0xff0a0a12); // deep near-black
-    const juce::Colour bgPanel   (0xff12121c);
-    const juce::Colour cyan      (0xff00f0ff); // primary accent
-    const juce::Colour violet    (0xff8b2ff7);
-    const juce::Colour magenta   (0xffff2e88); // reverse sections
-    const juce::Colour amber     (0xffffb020); // warnings/record
-    const juce::Colour textDim   (0xff8a8a9a);
-    const juce::Colour textBright(0xfff2f2f7);
-    const juce::Colour gridLine  (0xff1e1e2a);
+    const juce::Colour frameTop   (0xff3a3a42); // brushed graphite frame
+    const juce::Colour frameBot   (0xff17171b);
+    const juce::Colour panel      (0xff0b0b0d); // black inner panel
+    const juce::Colour screen     (0xff061014); // LCD: near-black cyan
+    const juce::Colour screenEdge (0xff000000);
+    const juce::Colour cyan       (0xff00e5ff); // LED + display accent
+    const juce::Colour cyanDim    (0xff0a5a66);
+    const juce::Colour amber      (0xffffb020); // capture / warning
+    const juce::Colour red        (0xffff3b30); // record LED
+    const juce::Colour metalHi    (0xffd8d8de); // chrome highlight
+    const juce::Colour metalMid   (0xff8a8a94);
+    const juce::Colour metalLo    (0xff2a2a30);
+    const juce::Colour textDim    (0xff9a9aa6);
+    const juce::Colour textBright (0xfff4f4f8);
+    const juce::Colour textMetal  (0xffc9c9d4); // engraved labels
+    const juce::Colour violet     (0xff7a86ff); // display secondary
+    const juce::Colour gridLine   (0xff0e2a32); // LCD grid
 }
 
 //==============================================================================
-class ChronoLookAndFeel : public juce::LookAndFeel_V4
+class HardwareLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
     void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h,
@@ -83,6 +91,10 @@ private:
     float paintStartX = 0.0f;
     bool painting = false;
     std::vector<QFlipProcessor::WarpZone> zones;
+    // Paint toolbar hit regions (computed in paint)
+    juce::Rectangle<float> paintTabRect;
+    juce::Rectangle<float> paintDotRects[5];
+    juce::Rectangle<float> paintClearRect;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TimeCurveEditor)
 };
@@ -201,6 +213,8 @@ private:
     void applyPreset (const QFlipPreset& p);
     void cyclePreset (int direction);
     void randomizePreset();
+    void generateVibe();
+    void syncPadsFromProcessor();
     void promptSavePreset();
     void saveUserPreset (const juce::String& name);
     QFlipPreset presetFromFile (const juce::File& f);
@@ -210,7 +224,7 @@ private:
     void setView (bool playView); // true=PLAY, false=EDIT
 
     QFlipProcessor& processor;
-    ChronoLookAndFeel lookAndFeel;
+    HardwareLookAndFeel lookAndFeel;
     juce::Image logoImage;
 
     bool showPlayView = true;
@@ -220,29 +234,24 @@ private:
     juce::TextButton editTab { "EDIT" };
     juce::ComboBox presetBox;
     DiceButton diceButton;
+    juce::ComboBox vibeBox;
     juce::TextButton prevPresetButton { "<" };
     juce::TextButton nextPresetButton { ">" };
     juce::TextButton savePresetButton { "SAVE" };
 
     // PLAY view
     TimeCurveEditor curveEditor;
-    TriggerPad reversePad { "REVERSE", Chrono::magenta };
-    TriggerPad tapeStopPad { "TAPE STOP", Chrono::amber };
-    TriggerPad revVerbPad { "REV VERB", Chrono::violet };
-    TriggerPad revDlyPad { "REV DELAY", Chrono::cyan };
-    TriggerPad stutterPad { "STUTTER", Chrono::cyan };
+    TriggerPad reversePad { "REVERSE", Hardware::cyan };
+    TriggerPad tapeStopPad { "TAPE STOP", Hardware::amber };
+    TriggerPad revVerbPad { "REV VERB", Hardware::amber };
+    TriggerPad revDlyPad { "REV DELAY", Hardware::cyan };
+    TriggerPad stutterPad { "STUTTER", Hardware::cyan };
     juce::Slider pitchSlider;
     juce::Slider gainSlider;
     juce::Slider mixSlider;
     juce::Label pitchLabel { {}, "PITCH" };
     juce::Label gainLabel { {}, "GAIN" };
     juce::Label mixLabel { {}, "MIX" };
-
-    // Warp zone strip (v0.4)
-    juce::TextButton zonePaintButton { "PAINT ZONES" };
-    juce::TextButton zoneSwatches[5];
-    juce::TextButton zoneClearButton { "CLEAR" };
-    juce::Label zoneHintLabel;
 
     // EDIT view
     juce::ComboBox loopBarsBox;
